@@ -1,6 +1,9 @@
 # ESP32_Precision-9_compass_CMPS14
 Digital compass acting as B&amp;G Precision 9 based on ESP32 and CMPS14
 
+## ESP32 board
+To have easy access to N2k [this board is recommended](https://hatlabs.github.io/sh-esp32/).
+
 ## Goal
 - A highly accurate compass which also reports roll, pitch, rate of turn and possibly heave.
 - Be able to use standard config screen in the B&G Zeus/Vulcan/Triton(2) to configure offsets and do calibration.
@@ -19,7 +22,7 @@ After trying the MPU9250 first, Iwasn't happy with the noise level. The CMPS14 s
  - Offsets are stored in EEPROM when set.
 
 ### What's half working
- - Deviation calibration stop/cancel from MFD. The stop/cancel signal works, but the 'finished' signal is still missing as well as the actual routing. This routine is the 390 deg circle that allows building a boat specific deviation table.
+ - Deviation calibration routine. The stop/finsihed signal works, but processing the outcome is still missing. This routine process should build a boat specific deviation table.
  - Auto calibration mode is recognised, but not used yet.
 
 ### What's not working

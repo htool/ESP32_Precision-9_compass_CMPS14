@@ -7,20 +7,21 @@ const uint8_t EEPROM_SIZE = 1 + (sizeof(float) * 3 * 4) + 4;
 
 enum EEP_ADDR
 {
-    EEP_HEADING_OFFSET  = 0x00,
-    EEP_HEEL_OFFSET     = 0x01,
-    EEP_TRIM_OFFSET     = 0x02,
-    EEP_AUTOCALIBRATION = 0x03
+  EEP_HEADING_OFFSET  = 0x00,
+  EEP_HEEL_OFFSET     = 0x01,
+  EEP_TRIM_OFFSET     = 0x02,
+  EEP_AUTOCALIBRATION = 0x03
 };
 
 //Address of the CMPS14 compass on i2c
 #define _i2cAddress 0x60
 
 #define CONTROL_Register 0
+#define VERSION_Register 0
 
-#define HEADING_Register 2 
-#define PITCH_Register 4 
-#define PITCH_Register16 26 
+#define HEADING_Register 2
+#define PITCH_Register 4
+#define PITCH_Register16 26
 #define ROLL_Register 5
 #define ROLL_Register16 28
 
@@ -53,36 +54,36 @@ byte _byteHigh;
 byte _byteLow;
 byte Byte;
 
-  // Please note without clear documentation in the technical documenation
-  // it is notoriously difficult to get the correct measurement units.
-  // I've tried my best, and may revise these numbers.
-  
-  int nReceived;
-  float pitch;
-  float roll;
+// Please note without clear documentation in the technical documenation
+// it is notoriously difficult to get the correct measurement units.
+// I've tried my best, and may revise these numbers.
 
-  float magnetX = 0;
-  float magnetY = 0;
-  float magnetZ = 0;
-  float yaw;
+int nReceived;
+float pitch;
+float roll;
 
-  float accelX = 0;
-  float accelY = 0;
-  float accelZ = 0;
-  // The acceleration along the X-axis, presented in mg 
-  // See BNO080_Datasheet_v1.3 page 21
-  float accelScale = 9.80592991914f/1000.f; // 1 m/s^2
-  
-  float gyroX = 0;
-  float gyroY = 0;
-  float gyroZ = 0;
-  // 16bit signed integer 32,768
-  // Max 2000 degrees per second - page 6
-  float gyroScale = 1.0f/16.f; // 1 Dps
+float magnetX = 0;
+float magnetY = 0;
+float magnetZ = 0;
+float yaw;
 
-float pitchFactoryCalibration = 1.3;
-float rollFactoryCalibration = -0.3;
-  
+float accelX = 0;
+float accelY = 0;
+float accelZ = 0;
+// The acceleration along the X-axis, presented in mg
+// See BNO080_Datasheet_v1.3 page 21
+float accelScale = 9.80592991914f / 1000.f; // 1 m/s^2
+
+float gyroX = 0;
+float gyroY = 0;
+float gyroZ = 0;
+// 16bit signed integer 32,768
+// Max 2000 degrees per second - page 6
+float gyroScale = 1.0f / 16.f; // 1 Dps
+
+float pitchFactoryCalibration = -1.3;
+float rollFactoryCalibration = -2.3;
+
 #define CAN_RX_PIN GPIO_NUM_34
 #define CAN_TX_PIN GPIO_NUM_32
 #include "N2kMessages.h"
@@ -93,15 +94,13 @@ float rollFactoryCalibration = -0.3;
 // List here messages your device will transmit.
 const unsigned long TransmitMessagesCompass[] PROGMEM = { 127250L, 127251L, 127257L , 0 }; //Vessel Heading, Rate of Turn, Attitude
 
-#define DEV_COMPASS 0 // 60-140
-
 tNMEA2000* nmea2000;
 tN2kMsg N2kMsg;
 tN2kMsg N2kMsgReply;
-int DEVICE_ID = 65;
+int DEVICE_ID = 24;
 int SID;
-bool n2kConnected = false;
-
+bool n2kConnected = true;
+bool sendData = true;
 
 // CMPS14 read error states
 bool compassError = false;
@@ -113,7 +112,7 @@ bool accelError = false;
 bool calibrationStart = false;
 bool calibrationStop = false;
 bool calibrationFinished = false;
- 
+
 // Deviation variables
 float Deviation[128];
 bool  calibrationRecording = false;
@@ -139,19 +138,19 @@ unsigned long Timer1 = 500000L;   // 500mS loop ... used when sending data to to
 unsigned long Stop1;              // Timer1 stops when micros() exceeds this value
 
 float heading, heading_mag, heading_true, heading_variation = 0,
-      heading_offset_rad = 0,
-      heel_offset_rad = 0, 
-      trim_offset_rad = 0; 
-int8_t heading_offset_deg = 0,      
-     heel_offset_deg = 0,
-     trim_offset_deg = 0;
+                                          heading_offset_rad = 0,
+                                          heel_offset_rad = 0,
+                                          trim_offset_rad = 0;
+int8_t heading_offset_deg = 0,
+       heel_offset_deg = 0,
+       trim_offset_deg = 0;
 bool send_heading = true;                           // to do 20 vs 10hz
 bool send_heading_true = false;                     // If we have variation, send True
 unsigned char compass_autocalibration = 0x00;
 
 void setup()
 {
-  Wire.begin(16,17);
+  Wire.begin(16, 17);
   Wire.setClock(400000);                            // 400 kbit/sec I2C speed
   Serial.begin(115200);
   while (!Serial);
@@ -161,16 +160,17 @@ void setup()
   digitalWrite(LED_BUILTIN, HIGH);
 
   delay(500);
-  
+
   // ----- Display title
   Serial.println("\nCMPS14 Compass emulating B&G Precision-9");
 
-  // showCMPSVersion();
-
-  // turnOffAutoCalibration();
-  turnOnAutoCalibration();
+  Serial.printf("CMPS version: %d\n", CMPSVersion());
 
   delay(200);
+
+  // No auto calibration at startup - use stored profile
+  changeCalibrationState(byte(B10000000));
+
 
   Serial.println("EEPROM available.");
   if (!EEPROM.begin(EEPROM_SIZE))
@@ -180,57 +180,59 @@ void setup()
 
   // clearCalibration();
   readCalibration();
-  
+
   delay(200);
 
   // Initialise canbus
   Serial.println("Set up NMEA2000 device");
   nmea2000 = new tNMEA2000_esp32(CAN_TX_PIN, CAN_RX_PIN);
 
-  nmea2000->SetN2kCANSendFrameBufSize(250);
-  nmea2000->SetN2kCANReceiveFrameBufSize(250);
-  
+  nmea2000->SetN2kCANSendFrameBufSize(150);
+  nmea2000->SetN2kCANReceiveFrameBufSize(150);
+
   // nmea2000->SetDeviceCount(1);
   // nmea2000->SetInstallationDescription1("");
   // nmea2000->SetInstallationDescription2("");
   nmea2000->SetProductInformation("107018103", // Manufacturer's Model serial code
-                                 13233, // Manufacturer's product code
-                                 "Precision-9 Compass",  // Manufacturer's Model ID
-                                 "2.0.3-0",  // Manufacturer's Software version code
-                                 "", // Manufacturer's Model version
-                                 1,  // load equivalency *50ma
-                                 0xffff, // NMEA 2000 version - use default
-                                 0xff, // Sertification level - use default
-                                 DEV_COMPASS
-                                );
- 
+                                  13233, // Manufacturer's product code
+                                  "Precision-9 Compass",  // Manufacturer's Model ID
+                                  "2.9.4-3",  // Manufacturer's Software version code
+                                  "2" // Manufacturer's Model version
+//                                "" // Manufacturer's Model version
+//                                  1,  // load equivalency *50ma
+//                                  0xffff, // NMEA 2000 version - use default
+//                                  0xff // Certification level - use default
+                                 );
+
   // Set device information
   nmea2000->SetDeviceInformation(1048678, // Unique number. Use e.g. Serial number.
-                                140, // Device function=Temperature See codes on http://www.nmea.org/Assets/20120726%20nmea%202000%20class%20%26%20function%20codes%20v%202.00.pdf
-                                60, // Device class=Sensor Communication Interface. See codes on http://www.nmea.org/Assets/20120726%20nmea%202000%20class%20%26%20function%20codes%20v%202.00.pdf
-                                275, // Just choosen free from code list on http://www.nmea.org/Assets/20121020%20nmea%202000%20registration%20list.pdf
-                                4,
-                                DEV_COMPASS
-                               );
+                                 140, // Device function=Temperature See codes on http://www.nmea.org/Assets/20120726%20nmea%202000%20class%20%26%20function%20codes%20v%202.00.pdf
+                                 60, // Device class=Sensor Communication Interface. See codes on http://www.nmea.org/Assets/20120726%20nmea%202000%20class%20%26%20function%20codes%20v%202.00.pdf
+                                 275 // Just choosen free from code list on http://www.nmea.org/Assets/20121020%20nmea%202000%20registration%20list.pdf
+//                                 4
+                                );
   nmea2000->SetMode(tNMEA2000::N2km_NodeOnly, DEVICE_ID);
   nmea2000->EnableForward(false);
-  nmea2000->SetForwardStream(&Serial);
-  nmea2000->SetForwardType(tNMEA2000::fwdt_Text);
-  nmea2000->ExtendTransmitMessages(TransmitMessagesCompass, DEV_COMPASS);
-  nmea2000->SetN2kCANMsgBufSize(20);
+  // nmea2000->SetForwardStream(&Serial);
+  // nmea2000->SetForwardType(tNMEA2000::fwdt_Text);
+  nmea2000->ExtendTransmitMessages(TransmitMessagesCompass);
+  nmea2000->SetN2kCANMsgBufSize(8);
   nmea2000->SetMsgHandler(HandleNMEA2000Msg);
   nmea2000->Open();
 
-  Serial.println("Press 'o' to enable serial output.");
+  Serial.println("Press 'o' to enable serial output. 'c' to cycle through calibration modes. 'z' to clear calibration.");
   t_next = 0;
 }
 
 void loop()
 {
-
+  if (t_next + 10 <= millis())                  // Set timer for 50ms
+  {
+    nmea2000->ParseMessages();
+  }
   if (t_next + 50 <= millis())                  // Set timer for 50ms
   {
-    t_next = millis();                        
+    t_next = millis();
     // Read the Compass
     ReadCompass();
     // Read the Accelerator
@@ -246,38 +248,39 @@ void loop()
     applyOffsetPitchRoll();
 
     readCalibrationStatus();
-    
-    printValues();
 
-    if (n2kConnected && send_heading && compassError == false) {
-      if (send_heading_true) {
-        SetN2kPGN127250(N2kMsg, SID, heading_true * DEG_TO_RAD, N2kDoubleNA, N2kDoubleNA, N2khr_true);
-        nmea2000->SendMsg(N2kMsg, DEV_COMPASS);
-      } else {
-        SetN2kPGN127250(N2kMsg, SID, heading_mag * DEG_TO_RAD, N2kDoubleNA, N2kDoubleNA, N2khr_magnetic);
-        nmea2000->SendMsg(N2kMsg, DEV_COMPASS);
+    printValues();
+    if (sendData) {
+      compassError = true; // no heading for now
+      if (n2kConnected && send_heading && compassError == false) {
+        if (send_heading_true) {
+          SetN2kPGN127250(N2kMsg, SID, heading_true * DEG_TO_RAD, N2kDoubleNA, N2kDoubleNA, N2khr_true);
+          nmea2000->SendMsg(N2kMsg);
+        } else {
+          SetN2kPGN127250(N2kMsg, SID, heading_mag * DEG_TO_RAD, N2kDoubleNA, N2kDoubleNA, N2khr_magnetic);
+          nmea2000->SendMsg(N2kMsg);
+        }
       }
       if (gyroError == false) {
         SetN2kRateOfTurn(N2kMsg, SID, gyroZ * DEG_TO_RAD * -1); // radians
-        nmea2000->SendMsg(N2kMsg, DEV_COMPASS);
+        nmea2000->SendMsg(N2kMsg);
+      }
+      send_heading = !send_heading;             // Toggle to do 10hz
+  
+      if (n2kConnected && pitchrollError == false) {
+        SetN2kAttitude(N2kMsg, SID, N2kDoubleNA, pitch * DEG_TO_RAD, roll * DEG_TO_RAD);
+        nmea2000->SendMsg(N2kMsg);
+      }
+  
+      // Send 130824 performance packet
+      if (n2kConnected && pitchrollError == false && SetN2kPGN130824(N2kMsg)) {  // pitch roll
+        nmea2000->SendMsg(N2kMsg);
       }
     }
-    send_heading = !send_heading;             // Toggle to do 10hz
-
-    if (n2kConnected && pitchrollError == false) {
-      SetN2kAttitude(N2kMsg, SID, N2kDoubleNA, pitch * DEG_TO_RAD, roll * DEG_TO_RAD);
-      nmea2000->SendMsg(N2kMsg, DEV_COMPASS);
-    }
-    
-    // Send 130824 performance packet
-    if (n2kConnected && pitchrollError == false && SetN2kPGN130824(N2kMsg)) {  // pitch roll
-      nmea2000->SendMsg(N2kMsg, DEV_COMPASS);
-    }
-
     SID++; if (SID > 253) {
       SID = 1;
     }
-      // Check for commands
+    // Check for commands
     if (Serial.available()) {
       InputChar = Serial.read();
       if (InputChar == 'o') {
@@ -287,14 +290,26 @@ void loop()
         Serial.println("Starting deviation calibration. Start turning at a steady 3 degrees/second and press 's' to start.");
         calibrationStart = true;
       }
+      if (InputChar == 'z') {
+        Serial.println("Clearing calibration... ");
+        clearCalibration();
+      }
+      if (InputChar == 'c') {
+        compass_autocalibration++;
+        if (compass_autocalibration > 2) {
+          compass_autocalibration = 0;
+        }
+        Serial.println("Changing autocalibration state");
+        configureAutoCalibration(compass_autocalibration);
+      }
       if (InputChar == 's' &&  calibrationRecording == false) {
         Serial.println("Calibration recording started. Keep turning at a steady 3 degrees/second for 390 degrees.");
-         calibrationRecording = true;
+        calibrationRecording = true;
       }
     }
     if (calibrationStart == true && calibrationStop == false) {
-        Serial.println("Calibration recording started. Keep turning at a steady 3 degrees/second for 390 degrees.");
-        calibrationRecording = true;
+      Serial.println("Calibration recording started. Keep turning at a steady 3 degrees/second for 390 degrees.");
+      calibrationRecording = true;
     }
     if ( calibrationRecording) {
       recordDeviation();
@@ -303,18 +318,18 @@ void loop()
     if (calibrationStop == true && calibrationStart == true) {
       calibrationStart = false;
       calibrationStop = false;
-       calibrationRecording = false;
+      calibrationRecording = false;
       Serial.println("Calibration cancelled.");
     }
     if (calibrationFinished) {
       Serial.println("Calibration finished.");
-       calibrationRecording = false;
+      Send130850();
+      calibrationRecording = false;
       calibrationStart = false;
       showDeviationTable();
     }
     ToggleLed();                              // Toggle led
   }
-  nmea2000->ParseMessages();
 
 }
 
@@ -323,7 +338,7 @@ void recordDeviation() {
   // With 3 degrees/second we can record the heading every 0.5 seconds in a table of 120 measurements
   if (millis() > t_dev) {
     t_dev += 500; // Next measurement to happen 500ms from now
-    if (calibrationRecording) {    
+    if (calibrationRecording) {
       Deviation[dev_num] = heading;
       Serial.printf("Rate of turn: % 5.2f dps   Deviation[%3d] = %05.2f\n", gyroZ, dev_num, Deviation[dev_num]);
       dev_num++;
@@ -331,13 +346,13 @@ void recordDeviation() {
         dev_num = 0;
       }
     } else {
-      Serial.printf("Rate of turn: % 3.0f dps   Press 's' to start recording.\n", gyroZ);  
+      Serial.printf("Rate of turn: % 3.0f dps   Press 's' to start recording.\n", gyroZ);
     }
   }
 }
 
 void showDeviationTable() {
-  Serial.printf("num heading\n");  
+  Serial.printf("num heading\n");
   for (dev_num = 0; dev_num <= 120; dev_num++) {
     Serial.printf("%3d, %05.2f\n", dev_num, Deviation[dev_num]);
   }
@@ -348,9 +363,9 @@ int num_n2k_messages = 0;
 void HandleNMEA2000Msg(const tN2kMsg &N2kMsg) {
   // N2kMsg.Print(&Serial);
   // Serial.printf("PGN: %u\n", (unsigned int)N2kMsg.PGN);
-  
+
   n2kConnected = true;
-  
+
   switch (N2kMsg.PGN) {
     case 130850L:
       if (ParseN2kPGN130850(N2kMsg)) {
@@ -380,18 +395,18 @@ void HandleNMEA2000Msg(const tN2kMsg &N2kMsg) {
 
 bool ParseN2kPGN130850(const tN2kMsg &N2kMsg) {
   Serial.println("Entering ParseN2kPGN130850");
-  if (N2kMsg.PGN!=130850L) return false;
-  int Index=2;
-  unsigned char Command1=N2kMsg.GetByte(Index);
-  unsigned char Command2=N2kMsg.GetByte(Index);
-  unsigned char Command3=N2kMsg.GetByte(Index);
-  unsigned char Command4=N2kMsg.GetByte(Index);
-  unsigned char CalibrationStopStart=N2kMsg.GetByte(Index);
+  if (N2kMsg.PGN != 130850L) return false;
+  int Index = 2;
+  unsigned char Command1 = N2kMsg.GetByte(Index);
+  unsigned char Command2 = N2kMsg.GetByte(Index);
+  unsigned char Command3 = N2kMsg.GetByte(Index);
+  unsigned char Command4 = N2kMsg.GetByte(Index);
+  unsigned char CalibrationStopStart = N2kMsg.GetByte(Index);
   //Serial.printf("Command1: %u  Command4: %u  CalibrationStopStart: %u  ", (unsigned int)Command1, (unsigned int)Command4, (unsigned int)CalibrationStopStart);
   if (Command1 == DEVICE_ID && Command4 == 18 && CalibrationStopStart == 0) {
     calibrationStart = true;
     // Send ack
-    Send130851Ack(0); 
+    Send130851Ack(0);
     return true;
   } else {
     if (Command1 == DEVICE_ID && Command4 == 18 && CalibrationStopStart == 1) {
@@ -405,21 +420,21 @@ bool ParseN2kPGN130850(const tN2kMsg &N2kMsg) {
 }
 
 bool ParseN2kPGN130845(const tN2kMsg &N2kMsg, uint16_t &Key, uint16_t &Command, uint16_t &Value) {
-  // Serial.println("Entering ParseN2kPGN130845");
+  Serial.println("Entering ParseN2kPGN130845");
   if (N2kMsg.PGN != 130845L) return false;
-  int Index=2;
+  int Index = 2;
   unsigned char Target = N2kMsg.GetByte(Index);
-  if (Target == 65) {
+  if (Target == DEVICE_ID) {
     N2kMsg.Print(&Serial);
     tN2kMsg N2kMsgReply;
     unsigned char source = N2kMsg.Source;
     Index = 6;
     Key = N2kMsg.Get2ByteUInt(Index);
-    Command = N2kMsg.Get2ByteUInt(Index);    
+    Command = N2kMsg.Get2ByteUInt(Index);
     if (Command == 0x0000) {
       // Get
       if (SetN2kPGN130845(N2kMsgReply, DEVICE_ID, Key, 2))   // 2 = Ack
-        nmea2000->SendMsg(N2kMsgReply, DEV_COMPASS);
+        nmea2000->SendMsg(N2kMsgReply);
     }
     if (Command == 0x0100) {
       // Set
@@ -428,7 +443,7 @@ bool ParseN2kPGN130845(const tN2kMsg &N2kMsg, uint16_t &Key, uint16_t &Command, 
           heading_offset_rad = N2kMsg.Get2ByteDouble(0.0001, Index);
           heading_offset_deg = (int8_t)round(heading_offset_rad * RAD_TO_DEG);
           if (heading_offset_deg > 127) {
-             heading_offset_deg = heading_offset_deg - 360;
+            heading_offset_deg = heading_offset_deg - 360;
           }
           Serial.printf("heading_offset_rad: %f  heading_offset_deg: %d, unsigned char: %d\n", heading_offset_rad, heading_offset_deg, (char)heading_offset_deg);
           EEPROM.writeByte(EEP_HEADING_OFFSET, (char)heading_offset_deg);
@@ -438,7 +453,7 @@ bool ParseN2kPGN130845(const tN2kMsg &N2kMsg, uint16_t &Key, uint16_t &Command, 
           heel_offset_rad = N2kMsg.Get2ByteDouble(0.0001, Index);
           heel_offset_deg = (int8_t)round(heel_offset_rad * RAD_TO_DEG);
           if (heel_offset_deg > 127) {
-             heel_offset_deg = heel_offset_deg - 360;
+            heel_offset_deg = heel_offset_deg - 360;
           }
           Serial.printf("heel_offset_rad: %f  heel_offset_deg: %d\n", heel_offset_rad, heel_offset_deg);
           EEPROM.writeByte(EEP_HEEL_OFFSET, (char)heel_offset_deg);
@@ -448,7 +463,7 @@ bool ParseN2kPGN130845(const tN2kMsg &N2kMsg, uint16_t &Key, uint16_t &Command, 
           trim_offset_rad = N2kMsg.Get2ByteDouble(0.0001, Index);
           trim_offset_deg = (int8_t)round(trim_offset_rad * RAD_TO_DEG);
           if (trim_offset_deg > 127) {
-             trim_offset_deg = trim_offset_deg - 360;
+            trim_offset_deg = trim_offset_deg - 360;
           }
           Serial.printf("trim_offset_rad: %f  trim_offset_deg: %d\n", trim_offset_rad, trim_offset_deg);
           EEPROM.writeByte(EEP_TRIM_OFFSET, (char)trim_offset_deg);
@@ -457,17 +472,19 @@ bool ParseN2kPGN130845(const tN2kMsg &N2kMsg, uint16_t &Key, uint16_t &Command, 
         case 0xd200:  // Auto calibration (01=on, 02=auto locked)
           compass_autocalibration = N2kMsg.GetByte(Index);
           if (SetN2kPGN130845(N2kMsgReply, DEVICE_ID, 0xd400, 2))
-            nmea2000->SendMsg(N2kMsgReply, DEV_COMPASS);
+            nmea2000->SendMsg(N2kMsgReply);
           EEPROM.writeByte(EEP_AUTOCALIBRATION, (unsigned char)compass_autocalibration);
           EEPROM.commit();
+          configureAutoCalibration(compass_autocalibration);
           break;
         case 0xd300:  // Warning
           break;
         case 0xd400:  // Status
-          break;      }
-        }
+          break;
+      }
+    }
     if (SetN2kPGN130845(N2kMsgReply, DEVICE_ID, Key, 2))
-      nmea2000->SendMsg(N2kMsgReply, DEV_COMPASS);      
+      nmea2000->SendMsg(N2kMsgReply);
     return true;
   } else {
     // Serial.printf("Skipping this one...\n");
@@ -479,12 +496,12 @@ bool ParseN2kPGN130845(const tN2kMsg &N2kMsg, uint16_t &Key, uint16_t &Command, 
 void Send130851Ack(int StopStart) {
   tN2kMsg N2kMsg;
   SetN2k130851Ack(N2kMsg, DEVICE_ID, 18, (unsigned char)StopStart);
-  nmea2000->SendMsg(N2kMsg, DEV_COMPASS);
+  nmea2000->SendMsg(N2kMsg);
 }
 
 bool SetN2kPGN130845(tN2kMsg &N2kMsg, unsigned char DEVICE_ID, uint16_t Key, uint16_t Command) {
   N2kMsg.SetPGN(130845L);
-  N2kMsg.Priority=2;
+  N2kMsg.Priority = 2;
   N2kMsg.AddByte(0x41); // Reserved
   N2kMsg.AddByte(0x9f); // Reserved
   N2kMsg.AddByte((unsigned char)DEVICE_ID);
@@ -500,7 +517,7 @@ bool SetN2kPGN130845(tN2kMsg &N2kMsg, unsigned char DEVICE_ID, uint16_t Key, uin
       Serial.printf("Adding heading offset: %d", (int8_t)heading_offset_rad);
       N2kMsg.Add2ByteDouble(heading_offset_rad, 0.0001);
       N2kMsg.AddByte(0xff); // Reserved
-     break;
+      break;
     case 0x0039:  // Heel offset
       N2kMsg.Add2ByteDouble(heel_offset_rad, 0.0001);
       break;
@@ -527,21 +544,49 @@ bool SetN2kPGN130845(tN2kMsg &N2kMsg, unsigned char DEVICE_ID, uint16_t Key, uin
   return true;
 }
 
+void Send130850() {
+  tN2kMsg N2kMsg;
+  SetN2k130850(N2kMsg);
+  nmea2000->SendMsg(N2kMsg);
+}
+
+// Calibration ok: 2,130850,src,255,12,41,9f,ff,ff,ff,12,02,00,00,00,00,00
+void SetN2kPGN130850(tN2kMsg &N2kMsg) {
+  N2kMsg.SetPGN(130850L);
+  N2kMsg.Priority = 2;
+  N2kMsg.AddByte(0x41); // Reserved
+  N2kMsg.AddByte(0x9f); // Reserved
+  N2kMsg.AddByte(0xff);
+  N2kMsg.AddByte(0xff); // Reserved
+  N2kMsg.AddByte(0xff); // Reserved
+  N2kMsg.AddByte(0x12);
+  N2kMsg.AddByte(0x02);
+  N2kMsg.AddByte(0x00); // Reserved
+  N2kMsg.AddByte(0x00); // Reserved
+  N2kMsg.AddByte(0x00); // Reserved
+  N2kMsg.AddByte(0x00); // Reserved
+  N2kMsg.AddByte(0x00); // Reserved
+}
+
+void SetN2k130850(tN2kMsg &N2kMsg) {
+  SetN2kPGN130850(N2kMsg);
+}
+
 void SetN2kPGN130851(tN2kMsg &N2kMsg, int DEVICE_ID, unsigned char Command, unsigned char CalibrationStopStart) {
-    N2kMsg.SetPGN(130851L);
-    N2kMsg.Priority=2;
-    N2kMsg.AddByte(0x41); // Reserved
-    N2kMsg.AddByte(0x9f); // Reserved
-    N2kMsg.AddByte((unsigned char)DEVICE_ID);
-    N2kMsg.AddByte(0xff); // Reserved
-    N2kMsg.AddByte(0xff); // Reserved
-    N2kMsg.AddByte((unsigned char)Command);
-    N2kMsg.AddByte((unsigned char)CalibrationStopStart);
-    N2kMsg.AddByte(0x00); // Reserved
-    N2kMsg.AddByte(0xff); // Reserved
-    N2kMsg.AddByte(0xff); // Reserved
-    N2kMsg.AddByte(0xff); // Reserved
-    N2kMsg.AddByte(0xff); // Reserved
+  N2kMsg.SetPGN(130851L);
+  N2kMsg.Priority = 2;
+  N2kMsg.AddByte(0x41); // Reserved
+  N2kMsg.AddByte(0x9f); // Reserved
+  N2kMsg.AddByte((unsigned char)DEVICE_ID);
+  N2kMsg.AddByte(0xff); // Reserved
+  N2kMsg.AddByte(0xff); // Reserved
+  N2kMsg.AddByte((unsigned char)Command);
+  N2kMsg.AddByte((unsigned char)CalibrationStopStart);
+  N2kMsg.AddByte(0x00); // Reserved
+  N2kMsg.AddByte(0xff); // Reserved
+  N2kMsg.AddByte(0xff); // Reserved
+  N2kMsg.AddByte(0xff); // Reserved
+  N2kMsg.AddByte(0xff); // Reserved
 }
 
 void SetN2k130851Ack(tN2kMsg &N2kMsg, int DEVICE_ID, unsigned char Command, unsigned char CalibrationStopStart) {
@@ -554,12 +599,12 @@ void SetN2k130845(tN2kMsg &N2kMsg, int DEVICE_ID, uint16_t Key, uint16_t Command
 
 bool SetN2kPGN130824(tN2kMsg &N2kMsg) {
   N2kMsg.SetPGN(130824L);
-  N2kMsg.Priority=3;
+  N2kMsg.Priority = 3;
   N2kMsg.AddByte(0x7d); // Reserved
   N2kMsg.AddByte(0x99); // Reserved
   N2kMsg.AddByte(0x9e); // 9e,20 Pitch rate
   N2kMsg.AddByte(0x20); // 9e,20 Pitch rate
-  N2kMsg.Add2ByteDouble(pitch * DEG_TO_RAD, 0.0001);    
+  N2kMsg.Add2ByteDouble(pitch * DEG_TO_RAD, 0.0001);
   N2kMsg.AddByte(0x3c); // 3c,20 Roll rate
   N2kMsg.AddByte(0x20); // 3c,20 Roll rate
   N2kMsg.Add2ByteDouble(roll * DEG_TO_RAD, 0.0001);
@@ -631,8 +676,11 @@ void calc_heading () {
 
 void printValues() {
   // ----- send the results to the Serial Monitor
-  if (showOutput) {  
-    // Print data to Serial Monitor window  
+  if (DEVICE_ID != 24) {
+    Serial.printf("ID: %2d\n", DEVICE_ID);
+  }
+  if (showOutput) {
+    // Print data to Serial Monitor window
     if (!compassError) {
       Serial.printf("Heading: % 5.1f", heading);
       Serial.printf(", Pitch: % 5.1f", pitch);
@@ -641,17 +689,17 @@ void printValues() {
     } else {
       Serial.print("[COMPASS ERROR] ");
     }
-    
+
     /*
-    Serial.print("\t$ACC,");
-    Serial.print(accelX,4);
-    Serial.print(",");
-    Serial.print(accelY,4); 
-    Serial.print(",");
-    Serial.print(accelZ,4);
-    Serial.print(" m/s^2,");
+      Serial.print("\t$ACC,");
+      Serial.print(accelX,4);
+      Serial.print(",");
+      Serial.print(accelY,4);
+      Serial.print(",");
+      Serial.print(accelZ,4);
+      Serial.print(" m/s^2,");
     */
-    
+
     if (!gyroError) {
       Serial.print("  [Gyro]");
       Serial.printf(" %6.1f", gyroZ);
@@ -659,13 +707,13 @@ void printValues() {
     } else {
       Serial.print(" [GYRO ERROR] ");
     }
-  
-   
+
+
     if (!compassError) {
       Serial.printf("  HeadingM % 5.1f", heading_mag);
       if (send_heading_true) {
         Serial.printf(" Variation % 3.1f", heading_variation);
-        Serial.printf(" HeadingT % 5.1f", heading_true);      
+        Serial.printf(" HeadingT % 5.1f", heading_true);
       }
     }
 
@@ -673,38 +721,40 @@ void printValues() {
     for (int z = 0; z <= 7; z++) {
       Serial.printf("%d", calibrationStatus[z]);
     }
-    Serial.printf ("n2kConnected: %d\n", n2kConnected);
+    Serial.printf (" n2kConnected: %d\n", n2kConnected);
   }
 }
 
 
 void clearCalibration()
 {
-    for (size_t i = 0; i < EEPROM_SIZE; ++i) {
-      EEPROM.writeByte(i, 0x0);
-    }
-    EEPROM.commit();
+  for (size_t i = 0; i < EEPROM_SIZE; ++i) {
+    EEPROM.writeByte(i, 0x0);
+  }
+  EEPROM.commit();
+  Serial.printf ("Calibration cleared\n");  
 }
 
 void readCalibration() {
-    Serial.println("\n[Saved settings]");
-    Serial.print("heading_offset_deg : ");
-    heading_offset_deg = (int8_t)EEPROM.readByte(EEP_HEADING_OFFSET);
-    heading_offset_rad = degToRad(heading_offset_deg);
-    Serial.printf("%d %f\n", heading_offset_deg, heading_offset_rad);
+  Serial.println("\n[Saved settings]");
+  Serial.print("heading_offset_deg : ");
+  heading_offset_deg = (int8_t)EEPROM.readByte(EEP_HEADING_OFFSET);
+  heading_offset_rad = degToRad(heading_offset_deg);
+  Serial.printf("%d %f\n", heading_offset_deg, heading_offset_rad);
 
-    Serial.print("heel_offset_deg    : ");
-    heel_offset_deg = (int8_t)(EEPROM.readByte(EEP_HEEL_OFFSET));
-    heel_offset_rad = degToRad(heel_offset_deg);
-    Serial.printf("%d %f\n", heel_offset_deg, heel_offset_rad);
+  Serial.print("heel_offset_deg    : ");
+  heel_offset_deg = (int8_t)(EEPROM.readByte(EEP_HEEL_OFFSET));
+  heel_offset_rad = degToRad(heel_offset_deg);
+  Serial.printf("%d %f\n", heel_offset_deg, heel_offset_rad);
 
-    Serial.print("trim_offset_deg    : ");
-    trim_offset_deg = (int8_t)(EEPROM.readByte(EEP_TRIM_OFFSET));
-    trim_offset_rad = degToRad(trim_offset_deg);    
-    Serial.printf("%d %f\n", trim_offset_deg, trim_offset_rad);
-    Serial.print("autocalibration    : "); 
-    Serial.println(EEPROM.readByte(EEP_AUTOCALIBRATION));        
-    Serial.println("\n");
+  Serial.print("trim_offset_deg    : ");
+  trim_offset_deg = (int8_t)(EEPROM.readByte(EEP_TRIM_OFFSET));
+  trim_offset_rad = degToRad(trim_offset_deg);
+  Serial.printf("%d %f\n", trim_offset_deg, trim_offset_rad);
+  Serial.print("autocalibration    : ");
+  compass_autocalibration = EEPROM.readByte(EEP_AUTOCALIBRATION);
+  Serial.println(compass_autocalibration);
+  configureAutoCalibration(compass_autocalibration);
 }
 
 float degToRad (int deg) {
@@ -714,8 +764,8 @@ float degToRad (int deg) {
 
 void printBytes()
 {
-    for (size_t i = 0; i < EEPROM_SIZE; ++i)
-        Serial.println(EEPROM.readByte(i), HEX);
+  for (size_t i = 0; i < EEPROM_SIZE; ++i)
+    Serial.println(EEPROM.readByte(i), HEX);
 }
 
 
@@ -730,14 +780,14 @@ float getPitch16()
   // End the transmission
   int nackCatcher = Wire.endTransmission();
 
-  // Return if we have a connection problem 
-  if(nackCatcher != 0) {
+  // Return if we have a connection problem
+  if (nackCatcher != 0) {
     pitchrollError = true;
     return 0;
   } else {
     pitchrollError = false;
   }
-  
+
   // Request 2 bytes from CMPS14
   nReceived = Wire.requestFrom(_i2cAddress , TWO_BYTES);
 
@@ -748,13 +798,15 @@ float getPitch16()
   } else {
     pitchrollError = false;
   }
-  
+
   // Read the values
-  _byteHigh = Wire.read(); 
+  _byteHigh = Wire.read();
   _byteLow = Wire.read();
 
-  float value =  ((_byteHigh<<8) + _byteLow);
-  if (value > 32767) { value -= 65535; };
+  float value =  ((_byteHigh << 8) + _byteLow);
+  if (value > 32767) {
+    value -= 65535;
+  };
   return (value / 10.0);
 }
 
@@ -769,8 +821,8 @@ float getRoll16()
   // End the transmission
   int nackCatcher = Wire.endTransmission();
 
-  // Return if we have a connection problem 
-  if(nackCatcher != 0) {
+  // Return if we have a connection problem
+  if (nackCatcher != 0) {
     pitchrollError = true;
     return 0;
   } else {
@@ -787,13 +839,15 @@ float getRoll16()
   } else {
     pitchrollError = false;
   }
-  
+
   // Read the values
-  _byteHigh = Wire.read(); 
+  _byteHigh = Wire.read();
   _byteLow = Wire.read();
 
-  float value =  ((_byteHigh<<8) + _byteLow);
-  if (value > 32767) { value -= 65535; };
+  float value =  ((_byteHigh << 8) + _byteLow);
+  if (value > 32767) {
+    value -= 65535;
+  };
   return (value / 10.0);
 }
 
@@ -808,21 +862,23 @@ int16_t getgyroX()
   // End the transmission
   int nackCatcher = Wire.endTransmission();
 
-  // Return if we have a connection problem 
-  if(nackCatcher != 0){return 0;}
-  
+  // Return if we have a connection problem
+  if (nackCatcher != 0) {
+    return 0;
+  }
+
   // Request 2 bytes from CMPS14
   nReceived = Wire.requestFrom(_i2cAddress , TWO_BYTES);
 
   // Something has gone wrong
   if (nReceived != TWO_BYTES) return 0;
-  
+
   // Read the values
-  _byteHigh = Wire.read(); 
+  _byteHigh = Wire.read();
   _byteLow = Wire.read();
 
   // Calculate GryoX
-  return ((_byteHigh<<8) + _byteLow);
+  return ((_byteHigh << 8) + _byteLow);
 }
 
 int16_t getgyroY()
@@ -836,21 +892,23 @@ int16_t getgyroY()
   // End the transmission
   int nackCatcher = Wire.endTransmission();
 
-  // Return if we have a connection problem 
-  if(nackCatcher != 0){return 0;}
-  
+  // Return if we have a connection problem
+  if (nackCatcher != 0) {
+    return 0;
+  }
+
   // Request 2 bytes from CMPS14
   nReceived = Wire.requestFrom(_i2cAddress , TWO_BYTES);
 
   // Something has gone wrong
   if (nReceived != TWO_BYTES) return 0;
-  
+
   // Read the values
-  _byteHigh = Wire.read(); 
+  _byteHigh = Wire.read();
   _byteLow = Wire.read();
 
   // Calculate GryoY
-  return ((_byteHigh<<8) + _byteLow);
+  return ((_byteHigh << 8) + _byteLow);
 }
 
 int16_t getgyroZ()
@@ -864,21 +922,23 @@ int16_t getgyroZ()
   // End the transmission
   int nackCatcher = Wire.endTransmission();
 
-  // Return if we have a connection problem 
-  if(nackCatcher != 0){return 0;}
-  
+  // Return if we have a connection problem
+  if (nackCatcher != 0) {
+    return 0;
+  }
+
   // Request 2 bytes from CMPS14
   nReceived = Wire.requestFrom(_i2cAddress , TWO_BYTES);
 
   // Something has gone wrong
   if (nReceived != TWO_BYTES) return 0;
-  
+
   // Read the values
-  _byteHigh = Wire.read(); 
+  _byteHigh = Wire.read();
   _byteLow = Wire.read();
 
   // Calculate GryoZ
-  return ((_byteHigh<<8) + _byteLow);
+  return ((_byteHigh << 8) + _byteLow);
 }
 
 int16_t getAcceleroX()
@@ -892,9 +952,11 @@ int16_t getAcceleroX()
   // End the transmission
   int nackCatcher = Wire.endTransmission();
 
-  // Return if we have a connection problem 
-  if(nackCatcher != 0){return 0;}
-  
+  // Return if we have a connection problem
+  if (nackCatcher != 0) {
+    return 0;
+  }
+
   // Request 2 bytes from CMPS14
   nReceived = Wire.requestFrom(_i2cAddress , TWO_BYTES);
 
@@ -902,11 +964,11 @@ int16_t getAcceleroX()
   if (nReceived != TWO_BYTES) return 0;
 
   // Read the values
-  _byteHigh = Wire.read(); 
+  _byteHigh = Wire.read();
   _byteLow = Wire.read();
 
   // Calculate Accelerometer
-  return (((int16_t)_byteHigh <<8) + (int16_t)_byteLow);
+  return (((int16_t)_byteHigh << 8) + (int16_t)_byteLow);
 }
 
 int16_t getAcceleroY()
@@ -920,21 +982,23 @@ int16_t getAcceleroY()
   // End the transmission
   int nackCatcher = Wire.endTransmission();
 
-  // Return if we have a connection problem 
-  if(nackCatcher != 0){return 0;}
-  
+  // Return if we have a connection problem
+  if (nackCatcher != 0) {
+    return 0;
+  }
+
   // Request 2 bytes from CMPS14
   nReceived = Wire.requestFrom(_i2cAddress , TWO_BYTES);
 
   // Something has gone wrong
   if (nReceived != TWO_BYTES) return 0;
-  
+
   // Read the values
-  _byteHigh = Wire.read(); 
+  _byteHigh = Wire.read();
   _byteLow = Wire.read();
 
   // Calculate Accelerometer
-  return (((int16_t)_byteHigh <<8) + (int16_t)_byteLow);
+  return (((int16_t)_byteHigh << 8) + (int16_t)_byteLow);
 }
 
 int16_t getAcceleroZ()
@@ -948,21 +1012,23 @@ int16_t getAcceleroZ()
   // End the transmission
   int nackCatcher = Wire.endTransmission();
 
-  // Return if we have a connection problem 
-  if(nackCatcher != 0){return 0;}
-  
+  // Return if we have a connection problem
+  if (nackCatcher != 0) {
+    return 0;
+  }
+
   // Request 2 bytes from CMPS14
   nReceived = Wire.requestFrom(_i2cAddress , TWO_BYTES);
 
   // Something has gone wrong
   if (nReceived != TWO_BYTES) return 0;
-  
+
   // Read the values
-  _byteHigh = Wire.read(); 
+  _byteHigh = Wire.read();
   _byteLow = Wire.read();
 
   // Calculate Accelerometer
-  return (((int16_t)_byteHigh <<8) + (int16_t)_byteLow);
+  return (((int16_t)_byteHigh << 8) + (int16_t)_byteLow);
 
 }
 
@@ -976,27 +1042,31 @@ int readCalibrationStatus() {
   // End the transmission
   int nackCatcher = Wire.endTransmission();
 
-  // Return if we have a connection problem 
-  if(nackCatcher != 0){return 0;}
-  
-  // Request 2 bytes from CMPS14
+  // Return if we have a connection problem
+  if (nackCatcher != 0) {
+    return 0;
+  }
+
+  // Request 1 byte from CMPS14
   nReceived = Wire.requestFrom(_i2cAddress , ONE_BYTE);
 
   // Something has gone wrong
-  if (nReceived != ONE_BYTE) { return 0; }
-  
+  if (nReceived != ONE_BYTE) {
+    return 0;
+  }
+
   // Read the value
   Byte = Wire.read();
-  
+
   for (int i = 0; i < 8; i++)
   {
-      bool b = Byte&0x80;
-      if (b) {
-        calibrationStatus[i] = 1;
-      } else {
-        calibrationStatus[i] = 0;        
-      }
-      Byte = Byte << 1;
+    bool b = Byte & 0x80;
+    if (b) {
+      calibrationStatus[i] = 1;
+    } else {
+      calibrationStatus[i] = 0;
+    }
+    Byte = Byte << 1;
   }
   return 0;
 }
@@ -1012,15 +1082,15 @@ void ReadCompass()
   // End the transmission
   int nackCatcher = Wire.endTransmission();
 
-  // Return if we have a connection problem 
-  if(nackCatcher != 0) {
+  // Return if we have a connection problem
+  if (nackCatcher != 0) {
     compassError = true;
     // heading = 0; pitch = 0;  roll = 0;
     return;
   } else {
     compassError = false;
   }
-  
+
   // Request 4 bytes from CMPS14
   nReceived = Wire.requestFrom(_i2cAddress , FOUR_BYTES);
 
@@ -1032,10 +1102,10 @@ void ReadCompass()
   } else {
     compassError = false;
   }
-  
+
   // Read the values
   _byteHigh = Wire.read(); _byteLow = Wire.read();
-  heading = ((_byteHigh<<8) + _byteLow) / 10.0;
+  heading = ((_byteHigh << 8) + _byteLow) / 10.0;
 
   // Read the values
   // float value = Wire.read();
@@ -1060,13 +1130,13 @@ void ReadAccelerator()
   // End the transmission
   int nackCatcher = Wire.endTransmission();
 
-  // Return if we have a connection problem 
-  if(nackCatcher != 0) {
+  // Return if we have a connection problem
+  if (nackCatcher != 0) {
     accelError = true;
     // accelX = 0; accelY = 0; accelZ = 0;
     return;
   }
-  
+
   // Request 6 bytes from CMPS14
   nReceived = Wire.requestFrom(_i2cAddress , SIX_BYTES);
 
@@ -1076,18 +1146,18 @@ void ReadAccelerator()
     // accelX = 0; accelY = 0; accelZ = 0;
     return;
   }
-  
-  // Read the values
-  _byteHigh = Wire.read(); _byteLow = Wire.read();
-  accelX = (((int16_t)_byteHigh <<8) + (int16_t)_byteLow) * accelScale;
 
   // Read the values
   _byteHigh = Wire.read(); _byteLow = Wire.read();
-  accelY = (((int16_t)_byteHigh <<8) + (int16_t)_byteLow) * accelScale;
+  accelX = (((int16_t)_byteHigh << 8) + (int16_t)_byteLow) * accelScale;
 
   // Read the values
   _byteHigh = Wire.read(); _byteLow = Wire.read();
-  accelZ = (((int16_t)_byteHigh <<8) + (int16_t)_byteLow) * accelScale;
+  accelY = (((int16_t)_byteHigh << 8) + (int16_t)_byteLow) * accelScale;
+
+  // Read the values
+  _byteHigh = Wire.read(); _byteLow = Wire.read();
+  accelZ = (((int16_t)_byteHigh << 8) + (int16_t)_byteLow) * accelScale;
 
 }
 
@@ -1102,13 +1172,13 @@ void ReadGyro()
   // End the transmission
   int nackCatcher = Wire.endTransmission();
 
-  // Return if we have a connection problem 
-  if(nackCatcher != 0) {
+  // Return if we have a connection problem
+  if (nackCatcher != 0) {
     gyroError = true;
     // gyroX = 0; gyroY = 0; gyroZ = 0
     return;
   }
-  
+
   // Request 6 bytes from CMPS14
   nReceived = Wire.requestFrom(_i2cAddress , SIX_BYTES);
 
@@ -1118,53 +1188,104 @@ void ReadGyro()
     //accelX = 0; accelY = 0; accelZ = 0;
     return;
   }
-  
+
   // Read the values
   _byteHigh = Wire.read(); _byteLow = Wire.read();
   // gyroX = (((int16_t)_byteHigh <<8) + (int16_t)_byteLow) * gyroScale;
-  gyroX = (int16_t)(_byteHigh<<8|_byteLow) * gyroScale;
+  gyroX = (int16_t)(_byteHigh << 8 | _byteLow) * gyroScale;
 
-    // Read the values
+  // Read the values
   _byteHigh = Wire.read(); _byteLow = Wire.read();
   // gyroY = (((int16_t)_byteHigh <<8) + (int16_t)_byteLow) * gyroScale;
-  gyroY = (int16_t)(_byteHigh<<8|_byteLow) * gyroScale;
+  gyroY = (int16_t)(_byteHigh << 8 | _byteLow) * gyroScale;
 
   // Read the values
   _byteHigh = Wire.read(); _byteLow = Wire.read();
   //gyroZ = (((int16_t)_byteHigh <<8) + (int16_t)_byteLow) * gyroScale;
-  gyroZ = (int16_t)(_byteHigh<<8|_byteLow) * gyroScale;
+  gyroZ = (int16_t)(_byteHigh << 8 | _byteLow) * gyroScale;
 }
 
-void showCMPSVersion () {
-  Serial.print("CMPS14 software version ");
+int CMPSVersion () {
   // Begin communication with CMPS14
   Wire.beginTransmission(_i2cAddress);
-  Wire.write(CONTROL_Register);
+
+  // Tell register you want some data
+  Wire.write(VERSION_Register);
+
+  // End the transmission
+  int nackCatcher = Wire.endTransmission();
+
+  // Return if we have a connection problem
+  if (nackCatcher != 0) {
+    return 0;
+  }
+
+  // Request 1 byte from CMPS14
+  nReceived = Wire.requestFrom(_i2cAddress , ONE_BYTE);
+
+  // Something has gone wrong
+  if (nReceived != ONE_BYTE) {
+    return 0;
+  }
+
+  // Read the value
   byte version = Wire.read();
-  Serial.println(version);
+  return (int (version));
 }
 
-int turnOffAutoCalibration () {
-  Serial.println("Turning off auto calibration");
-  // Begin communication with CMPS14
+void sendByte(byte B) {
   Wire.beginTransmission(_i2cAddress);
   Wire.write(CONTROL_Register);
-  // Stop calibration
-  Wire.write(byte(B10000000));
-  int nackCatcher = Wire.endTransmission();
-  return nackCatcher;
+  Wire.write(B);
+  Wire.endTransmission();
+  delay(20);
 }
 
-int turnOnAutoCalibration () {
-  Serial.println("Turning on auto calibration");
-  // Begin communication with CMPS14
-  Wire.beginTransmission(_i2cAddress);
-  Wire.write(CONTROL_Register);
-  // Stop calibration
-  Wire.write(byte(B10010001));
-  int nackCatcher = Wire.endTransmission();
-  return nackCatcher;
+void storeCalibrationProfile() {
+  sendByte(byte(0xF0));
+  sendByte(byte(0xF5));
+  sendByte(byte(0xF6));
 }
+
+void sendEraseCalibration() {
+  sendByte(byte(0xE0));
+  sendByte(byte(0xE5));
+  sendByte(byte(0xE2));
+}
+
+void changeCalibrationState(byte state) {
+  sendByte(byte(0x98));
+  sendByte(byte(0x95));
+  sendByte(byte(0x99));
+  Serial.printf("Writing %d\n", state);
+  sendByte(state);
+}
+
+void configureAutoCalibration(unsigned char m) {
+  Serial.printf("configureAutoCalibration mode: %s\n", String(m));
+  if (m == 0x00) {
+    Serial.println("Turning autocalibration off");
+    delay(100);
+    changeCalibrationState(byte(B10000000));
+  }
+  if (m == 0x01) {
+    Serial.println("Turning auto calibration on");
+    sendEraseCalibration();
+    delay(500);
+    changeCalibrationState(byte(B10010111));
+   }
+  if (m == 0x02) {
+    Serial.println("Changing auto calibration to locked");
+    storeCalibrationProfile();
+    delay(500);
+    changeCalibrationState(byte(B10000000));
+  }
+  if (m == 0x03) {
+    Serial.println("Turning autocalibration auto");
+    changeCalibrationState(byte(B10010001));
+  }
+}
+
 
 void changeAddress(byte i2cAddress, byte newi2cAddress)
 {
@@ -1186,7 +1307,7 @@ void changeAddress(byte i2cAddress, byte newi2cAddress)
   Wire.beginTransmission(i2cAddress);
   Wire.write(CONTROL_Register);
   Wire.write(byte(0xA0));
-  
+
   // End the transmission
   int nackCatcher = Wire.endTransmission();
 
@@ -1201,8 +1322,10 @@ void changeAddress(byte i2cAddress, byte newi2cAddress)
   // End the transmission
   nackCatcher = Wire.endTransmission();
 
-  // Return if we have a connection problem 
-  if(nackCatcher != 0){return;}
+  // Return if we have a connection problem
+  if (nackCatcher != 0) {
+    return;
+  }
 
   //Wait 100ms
   delay(100);
@@ -1215,8 +1338,10 @@ void changeAddress(byte i2cAddress, byte newi2cAddress)
   // End the transmission
   nackCatcher = Wire.endTransmission();
 
-  // Return if we have a connection problem 
-  if(nackCatcher != 0){return;}
+  // Return if we have a connection problem
+  if (nackCatcher != 0) {
+    return;
+  }
 
   //Wait 100ms
   delay(100);
@@ -1229,7 +1354,9 @@ void changeAddress(byte i2cAddress, byte newi2cAddress)
   // End the transmission
   nackCatcher = Wire.endTransmission();
 
-  // Return if we have a connection problem 
-  if(nackCatcher != 0){return;}
+  // Return if we have a connection problem
+  if (nackCatcher != 0) {
+    return;
+  }
 
 }

@@ -254,21 +254,21 @@ void loop()
       compassError = true; // no heading for now
       if (n2kConnected && send_heading && compassError == false) {
         if (send_heading_true) {
-          SetN2kPGN127250(N2kMsg, SID, heading_true * DEG_TO_RAD, N2kDoubleNA, N2kDoubleNA, N2khr_true);
+          SetN2kPGN127250(N2kMsg, SID, radians(heading_true), N2kDoubleNA, N2kDoubleNA, N2khr_true);
           nmea2000->SendMsg(N2kMsg);
         } else {
-          SetN2kPGN127250(N2kMsg, SID, heading_mag * DEG_TO_RAD, N2kDoubleNA, N2kDoubleNA, N2khr_magnetic);
+          SetN2kPGN127250(N2kMsg, SID, radians(heading_mag), N2kDoubleNA, N2kDoubleNA, N2khr_magnetic);
           nmea2000->SendMsg(N2kMsg);
         }
       }
       if (gyroError == false) {
-        SetN2kRateOfTurn(N2kMsg, SID, gyroZ * DEG_TO_RAD * -1); // radians
+        SetN2kRateOfTurn(N2kMsg, SID, radians(gyroZ) * -1); // radians
         nmea2000->SendMsg(N2kMsg);
       }
       send_heading = !send_heading;             // Toggle to do 10hz
   
       if (n2kConnected && pitchrollError == false) {
-        SetN2kAttitude(N2kMsg, SID, N2kDoubleNA, pitch * DEG_TO_RAD, roll * DEG_TO_RAD);
+        SetN2kAttitude(N2kMsg, SID, N2kDoubleNA, radians(pitch), radians(roll));
         nmea2000->SendMsg(N2kMsg);
       }
   
@@ -378,7 +378,7 @@ void HandleNMEA2000Msg(const tN2kMsg &N2kMsg) {
       uint16_t DaysSince1970;
       double variation;
       ParseN2kMagneticVariation(N2kMsg, SID, source, DaysSince1970, variation);
-      heading_variation = (float)variation * RAD_TO_DEG;
+      heading_variation = degrees((float)variation);
       send_heading_true = true;
       break;
     case 130845L:
@@ -441,7 +441,7 @@ bool ParseN2kPGN130845(const tN2kMsg &N2kMsg, uint16_t &Key, uint16_t &Command, 
       switch (Key) {
         case 0x0000:  // Heading offset
           heading_offset_rad = N2kMsg.Get2ByteDouble(0.0001, Index);
-          heading_offset_deg = (int8_t)round(heading_offset_rad * RAD_TO_DEG);
+          heading_offset_deg = (int8_t)round(degrees(heading_offset_rad));
           if (heading_offset_deg > 127) {
             heading_offset_deg = heading_offset_deg - 360;
           }
@@ -451,7 +451,7 @@ bool ParseN2kPGN130845(const tN2kMsg &N2kMsg, uint16_t &Key, uint16_t &Command, 
           break;
         case 0x0039:  // Heel offset
           heel_offset_rad = N2kMsg.Get2ByteDouble(0.0001, Index);
-          heel_offset_deg = (int8_t)round(heel_offset_rad * RAD_TO_DEG);
+          heel_offset_deg = (int8_t)round(degrees(heel_offset_rad));
           if (heel_offset_deg > 127) {
             heel_offset_deg = heel_offset_deg - 360;
           }
@@ -461,7 +461,7 @@ bool ParseN2kPGN130845(const tN2kMsg &N2kMsg, uint16_t &Key, uint16_t &Command, 
           break;
         case 0x0031:  // Trim offset
           trim_offset_rad = N2kMsg.Get2ByteDouble(0.0001, Index);
-          trim_offset_deg = (int8_t)round(trim_offset_rad * RAD_TO_DEG);
+          trim_offset_deg = (int8_t)round(degrees(trim_offset_rad));
           if (trim_offset_deg > 127) {
             trim_offset_deg = trim_offset_deg - 360;
           }
@@ -604,10 +604,10 @@ bool SetN2kPGN130824(tN2kMsg &N2kMsg) {
   N2kMsg.AddByte(0x99); // Reserved
   N2kMsg.AddByte(0x9e); // 9e,20 Pitch rate
   N2kMsg.AddByte(0x20); // 9e,20 Pitch rate
-  N2kMsg.Add2ByteDouble(pitch * DEG_TO_RAD, 0.0001);
+  N2kMsg.Add2ByteDouble(radians(pitch), 0.0001);
   N2kMsg.AddByte(0x3c); // 3c,20 Roll rate
   N2kMsg.AddByte(0x20); // 3c,20 Roll rate
-  N2kMsg.Add2ByteDouble(roll * DEG_TO_RAD, 0.0001);
+  N2kMsg.Add2ByteDouble(radians(roll), 0.0001);
   return true;
 }
 
@@ -739,17 +739,17 @@ void readCalibration() {
   Serial.println("\n[Saved settings]");
   Serial.print("heading_offset_deg : ");
   heading_offset_deg = (int8_t)EEPROM.readByte(EEP_HEADING_OFFSET);
-  heading_offset_rad = degToRad(heading_offset_deg);
+  heading_offset_rad = radians(heading_offset_deg);
   Serial.printf("%d %f\n", heading_offset_deg, heading_offset_rad);
 
   Serial.print("heel_offset_deg    : ");
   heel_offset_deg = (int8_t)(EEPROM.readByte(EEP_HEEL_OFFSET));
-  heel_offset_rad = degToRad(heel_offset_deg);
+  heel_offset_rad = radians(heel_offset_deg);
   Serial.printf("%d %f\n", heel_offset_deg, heel_offset_rad);
 
   Serial.print("trim_offset_deg    : ");
   trim_offset_deg = (int8_t)(EEPROM.readByte(EEP_TRIM_OFFSET));
-  trim_offset_rad = degToRad(trim_offset_deg);
+  trim_offset_rad = radians(trim_offset_deg);
   Serial.printf("%d %f\n", trim_offset_deg, trim_offset_rad);
   Serial.print("autocalibration    : ");
   compass_autocalibration = EEPROM.readByte(EEP_AUTOCALIBRATION);
@@ -757,17 +757,11 @@ void readCalibration() {
   configureAutoCalibration(compass_autocalibration);
 }
 
-float degToRad (int deg) {
-  float rad = deg * DEG_TO_RAD;
-  return rad;
-}
-
 void printBytes()
 {
   for (size_t i = 0; i < EEPROM_SIZE; ++i)
     Serial.println(EEPROM.readByte(i), HEX);
 }
-
 
 float getPitch16()
 {

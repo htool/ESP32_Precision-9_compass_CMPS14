@@ -3,6 +3,7 @@ Digital compass acting as B&amp;G Precision 9 based on ESP32 and CMPS14
 
 ## ESP32 board
 To have easy access to N2k [this board is recommended](https://hatlabs.github.io/sh-esp32/).
+There is a part on the board for prototyping. You can use this to add the CMPS14 directly on the board
 
 ## Goal
 - A highly accurate compass which also reports roll, pitch, rate of turn and possibly heave.
@@ -23,7 +24,11 @@ After trying the MPU9250 first, Iwasn't happy with the noise level. The CMPS14 s
 
 ### What's half working
  - Deviation calibration routine. The stop/finsihed signal works, but processing the outcome is still missing. This routine process should build a boat specific deviation table.
- - Auto calibration mode is recognised, but not used yet.
+ - Auto calibration mode is recognised,
+   - Off, means.... Off, no autocalibration
+   - On, means Autocalibration on for Gyro, Accelerometer and Magnetometer
+   - Locked, means Off, no autocalibration. Save calibration profile
+   - Auto, means Autocalibration off for Gyro and Accelerometer. On for Magnetometer
 
 ### What's not working
  - Actual creation of the deviation table, which from what I understand can be done using Fourier transformation on the data from the 390 deg circle.

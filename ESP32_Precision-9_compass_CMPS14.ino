@@ -221,6 +221,7 @@ void setup()
   nmea2000->Open();
 
   Serial.println("Press 'o' to enable serial output. 'c' to cycle through calibration modes. 'z' to clear calibration.");
+  Serial.println("Press '0: Auto calibration off. 1: Auto calibration on, 2: Auto calibration locked, 3: Auto calibration auto");
   t_next = 0;
 }
 
@@ -299,6 +300,26 @@ void loop()
         if (compass_autocalibration > 2) {
           compass_autocalibration = 0;
         }
+        Serial.println("Changing autocalibration state");
+        configureAutoCalibration(compass_autocalibration);
+      }
+      if (InputChar == '0') {
+        compass_autocalibration = 0;
+        Serial.println("Changing autocalibration state");
+        configureAutoCalibration(compass_autocalibration);
+      }
+      if (InputChar == '1') {
+        compass_autocalibration = 1;
+        Serial.println("Changing autocalibration state");
+        configureAutoCalibration(compass_autocalibration);
+      }
+      if (InputChar == '2') {
+        compass_autocalibration = 2;
+        Serial.println("Changing autocalibration state");
+        configureAutoCalibration(compass_autocalibration);
+      }
+      if (InputChar == '3') {
+        compass_autocalibration = 3;
         Serial.println("Changing autocalibration state");
         configureAutoCalibration(compass_autocalibration);
       }
@@ -473,8 +494,6 @@ bool ParseN2kPGN130845(const tN2kMsg &N2kMsg, uint16_t &Key, uint16_t &Command, 
           compass_autocalibration = N2kMsg.GetByte(Index);
           if (SetN2kPGN130845(N2kMsgReply, DEVICE_ID, 0xd400, 2))
             nmea2000->SendMsg(N2kMsgReply);
-          EEPROM.writeByte(EEP_AUTOCALIBRATION, (unsigned char)compass_autocalibration);
-          EEPROM.commit();
           configureAutoCalibration(compass_autocalibration);
           break;
         case 0xd300:  // Warning
@@ -1257,6 +1276,9 @@ void changeCalibrationState(byte state) {
 
 void configureAutoCalibration(unsigned char m) {
   Serial.printf("configureAutoCalibration mode: %s\n", String(m));
+  EEPROM.writeByte(EEP_AUTOCALIBRATION, m);
+  EEPROM.commit();
+
   if (m == 0x00) {
     Serial.println("Turning autocalibration off");
     delay(100);

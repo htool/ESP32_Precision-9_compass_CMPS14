@@ -2,6 +2,22 @@
 #include <SPI.h>
 #include <Wire.h>
 
+// Include and check for bluetooth availability
+#include "BluetoothSerial.h"
+
+
+#if !defined(CONFIG_BT_ENABLED)  || !defined(CONFIG_BLUEDROID_ENABLED)
+#error Bluetooth is not enabled! Please  run `make menuconfig` to and enable it
+#endif
+
+#if !defined(CONFIG_BT_SPP_ENABLED)
+#error  Serial Bluetooth not available or not enabled. It is only available for the ESP32  chip.
+#endif
+
+BluetoothSerial SerialBT;                   // set the Object SerialBT
+#define BT_MON 1                // enable serial terminal via Bluetooth (f.e. https://play.google.com/store/apps/details?id=de.kai_morich.serial_bluetooth_terminal )
+
+
 #include <EEPROM.h>             // include library to read and write from flash memory
 const uint8_t EEPROM_SIZE = 1 + (sizeof(float) * 3 * 4) + 4;
 
@@ -45,6 +61,7 @@ int calibrationStatus[8];
 #define TWO_BYTES  2
 #define FOUR_BYTES 4
 #define SIX_BYTES  6
+
 
 float Pi = 3.1415926;
 
@@ -132,6 +149,8 @@ byte intPin = 2;                  // Interrupt pin (not used) ... 2 and 3 are th
 
 bool showOutput = false;
 char InputChar;                   // incoming characters stored here
+char BlueChar;                    // incoming characters from Bluetooth stored here
+char logMsg[150];                 // Logmessages are stored here
 
 // ----- software timer
 unsigned long Timer1 = 500000L;   // 500mS loop ... used when sending data to to Processing
@@ -154,7 +173,11 @@ void setup()
   Wire.setClock(400000);                            // 400 kbit/sec I2C speed
   Serial.begin(115200);
   while (!Serial);
-
+  
+  // Setup serial bluetooth
+  if (BT_MON) {
+    SerialBT.begin("ESP32_Precision-9");               // Bluetooth device  name
+  }
   // Setup LED
   pinMode(LED_BUILTIN, OUTPUT);
   digitalWrite(LED_BUILTIN, HIGH);
@@ -220,7 +243,7 @@ void setup()
   nmea2000->SetMsgHandler(HandleNMEA2000Msg);
   nmea2000->Open();
 
-  Serial.println("Press 'o' to enable serial output. 'c' to cycle through calibration modes. 'z' to clear calibration.");
+  Serial.println("Press 'o' to enable log output. 'c' to cycle through calibration modes. 'z' to clear calibration. 'h' for help");
   Serial.println("Press '0: Auto calibration off. 1: Auto calibration on, 2: Auto calibration locked, 3: Auto calibration auto");
   t_next = 0;
 }
@@ -282,54 +305,61 @@ void loop()
       SID = 1;
     }
     // Check for commands
-    if (Serial.available()) {
+    if (Serial.available() || SerialBT.available()) {
       InputChar = Serial.read();
-      if (InputChar == 'o') {
+      if (BT_MON) {
+        BlueChar = SerialBT.read();
+      }
+      if (InputChar == 'o' || BlueChar == 'o') {
         showOutput = !showOutput;
       }
-      if (InputChar == 'd') {
-        Serial.println("Starting deviation calibration. Start turning at a steady 3 degrees/second and press 's' to start.");
+      if (InputChar == 'h' || BlueChar == 'h') {
+          monitorPrintln("Press 'o' to enable log output. 'c' to cycle through calibration modes. 'z' to clear calibration.");
+          monitorPrintln("Press '0: Auto calibration off. 1: Auto calibration on, 2: Auto calibration locked, 3: Auto calibration auto");
+      }
+      if (InputChar == 'd' || BlueChar == 'd') {
+        monitorPrintln("Starting deviation calibration. Start turning at a steady 3 degrees/second and press 's' to start.");
         calibrationStart = true;
       }
-      if (InputChar == 'z') {
-        Serial.println("Clearing calibration... ");
+      if (InputChar == 'z' || BlueChar == 'z') {
+        monitorPrintln("Clearing calibration... ");
         clearCalibration();
       }
-      if (InputChar == 'c') {
+      if (InputChar == 'c' || BlueChar == 'c') {
         compass_autocalibration++;
         if (compass_autocalibration > 2) {
           compass_autocalibration = 0;
         }
-        Serial.println("Changing autocalibration state");
+        monitorPrintln("Changing autocalibration state");
         configureAutoCalibration(compass_autocalibration);
       }
-      if (InputChar == '0') {
+      if (InputChar == '0' || BlueChar == '0') {
         compass_autocalibration = 0;
-        Serial.println("Changing autocalibration state");
+        monitorPrintln("Changing autocalibration state");
         configureAutoCalibration(compass_autocalibration);
       }
-      if (InputChar == '1') {
+      if (InputChar == '1' || BlueChar == '1') {
         compass_autocalibration = 1;
-        Serial.println("Changing autocalibration state");
+        monitorPrintln("Changing autocalibration state");
         configureAutoCalibration(compass_autocalibration);
       }
-      if (InputChar == '2') {
+      if (InputChar == '2' || BlueChar == '2') {
         compass_autocalibration = 2;
-        Serial.println("Changing autocalibration state");
+        monitorPrintln("Changing autocalibration state");
         configureAutoCalibration(compass_autocalibration);
       }
-      if (InputChar == '3') {
+      if (InputChar == '3' || BlueChar == '3') {
         compass_autocalibration = 3;
-        Serial.println("Changing autocalibration state");
+        monitorPrintln("Changing autocalibration state");
         configureAutoCalibration(compass_autocalibration);
       }
-      if (InputChar == 's' &&  calibrationRecording == false) {
-        Serial.println("Calibration recording started. Keep turning at a steady 3 degrees/second for 390 degrees.");
+      if ((InputChar == 's' || BlueChar == 's') &&  calibrationRecording == false) {
+        monitorPrintln("Calibration recording started. Keep turning at a steady 3 degrees/second for 390 degrees.");
         calibrationRecording = true;
       }
     }
     if (calibrationStart == true && calibrationStop == false) {
-      Serial.println("Calibration recording started. Keep turning at a steady 3 degrees/second for 390 degrees.");
+      monitorPrintln("Calibration recording started. Keep turning at a steady 3 degrees/second for 390 degrees.");
       calibrationRecording = true;
     }
     if ( calibrationRecording) {
@@ -340,10 +370,10 @@ void loop()
       calibrationStart = false;
       calibrationStop = false;
       calibrationRecording = false;
-      Serial.println("Calibration cancelled.");
+      monitorPrintln("Calibration cancelled.");
     }
     if (calibrationFinished) {
-      Serial.println("Calibration finished.");
+      monitorPrintln("Calibration finished.");
       Send130850();
       calibrationRecording = false;
       calibrationStart = false;
@@ -361,21 +391,24 @@ void recordDeviation() {
     t_dev += 500; // Next measurement to happen 500ms from now
     if (calibrationRecording) {
       Deviation[dev_num] = heading;
-      Serial.printf("Rate of turn: % 5.2f dps   Deviation[%3d] = %05.2f\n", gyroZ, dev_num, Deviation[dev_num]);
+      sprintf(logMsg, "Rate of turn: % 5.2f dps   Deviation[%3d] = %05.2f\n", gyroZ, dev_num, Deviation[dev_num]);
+      monitorPrint(logMsg);
       dev_num++;
       if (dev_num > 120) {
         dev_num = 0;
       }
     } else {
-      Serial.printf("Rate of turn: % 3.0f dps   Press 's' to start recording.\n", gyroZ);
+      sprintf(logMsg, "Rate of turn: % 3.0f dps   Press 's' to start recording.\n", gyroZ);
+      monitorPrint(logMsg);
     }
   }
 }
 
 void showDeviationTable() {
-  Serial.printf("num heading\n");
+  monitorPrintln("num heading");
   for (dev_num = 0; dev_num <= 120; dev_num++) {
-    Serial.printf("%3d, %05.2f\n", dev_num, Deviation[dev_num]);
+    sprintf(logMsg, "%3d, %05.2f\n", dev_num, Deviation[dev_num]);
+    monitorPrint(logMsg);
   }
 }
 
@@ -390,7 +423,8 @@ void HandleNMEA2000Msg(const tN2kMsg &N2kMsg) {
   switch (N2kMsg.PGN) {
     case 130850L:
       if (ParseN2kPGN130850(N2kMsg)) {
-        Serial.printf("calibrationStart: %s  calibrationStop: %s\n", String(calibrationStart), String(calibrationStop));
+        sprintf(logMsg, "calibrationStart: %s  calibrationStop: %s\n", String(calibrationStart), String(calibrationStop));
+        monitorPrint(logMsg);
       }
       break;
     case 127258L:
@@ -415,7 +449,7 @@ void HandleNMEA2000Msg(const tN2kMsg &N2kMsg) {
 }
 
 bool ParseN2kPGN130850(const tN2kMsg &N2kMsg) {
-  Serial.println("Entering ParseN2kPGN130850");
+  monitorPrintln("Entering ParseN2kPGN130850");
   if (N2kMsg.PGN != 130850L) return false;
   int Index = 2;
   unsigned char Command1 = N2kMsg.GetByte(Index);
@@ -441,7 +475,7 @@ bool ParseN2kPGN130850(const tN2kMsg &N2kMsg) {
 }
 
 bool ParseN2kPGN130845(const tN2kMsg &N2kMsg, uint16_t &Key, uint16_t &Command, uint16_t &Value) {
-  Serial.println("Entering ParseN2kPGN130845");
+  monitorPrintln("Entering ParseN2kPGN130845");
   if (N2kMsg.PGN != 130845L) return false;
   int Index = 2;
   unsigned char Target = N2kMsg.GetByte(Index);
@@ -466,7 +500,8 @@ bool ParseN2kPGN130845(const tN2kMsg &N2kMsg, uint16_t &Key, uint16_t &Command, 
           if (heading_offset_deg > 127) {
             heading_offset_deg = heading_offset_deg - 360;
           }
-          Serial.printf("heading_offset_rad: %f  heading_offset_deg: %d, unsigned char: %d\n", heading_offset_rad, heading_offset_deg, (char)heading_offset_deg);
+          sprintf(logMsg, "heading_offset_rad: %f  heading_offset_deg: %d, unsigned char: %d\n", heading_offset_rad, heading_offset_deg, (char)heading_offset_deg);
+          monitorPrint(logMsg);
           EEPROM.writeByte(EEP_HEADING_OFFSET, (char)heading_offset_deg);
           EEPROM.commit();
           break;
@@ -476,7 +511,8 @@ bool ParseN2kPGN130845(const tN2kMsg &N2kMsg, uint16_t &Key, uint16_t &Command, 
           if (heel_offset_deg > 127) {
             heel_offset_deg = heel_offset_deg - 360;
           }
-          Serial.printf("heel_offset_rad: %f  heel_offset_deg: %d\n", heel_offset_rad, heel_offset_deg);
+          sprintf(logMsg, "heel_offset_rad: %f  heel_offset_deg: %d\n", heel_offset_rad, heel_offset_deg);
+          monitorPrint(logMsg);
           EEPROM.writeByte(EEP_HEEL_OFFSET, (char)heel_offset_deg);
           EEPROM.commit();
           break;
@@ -486,7 +522,8 @@ bool ParseN2kPGN130845(const tN2kMsg &N2kMsg, uint16_t &Key, uint16_t &Command, 
           if (trim_offset_deg > 127) {
             trim_offset_deg = trim_offset_deg - 360;
           }
-          Serial.printf("trim_offset_rad: %f  trim_offset_deg: %d\n", trim_offset_rad, trim_offset_deg);
+          sprintf(logMsg, "trim_offset_rad: %f  trim_offset_deg: %d\n", trim_offset_rad, trim_offset_deg);
+          monitorPrint(logMsg);
           EEPROM.writeByte(EEP_TRIM_OFFSET, (char)trim_offset_deg);
           EEPROM.commit();
           break;
@@ -533,7 +570,8 @@ bool SetN2kPGN130845(tN2kMsg &N2kMsg, unsigned char DEVICE_ID, uint16_t Key, uin
   }
   switch (Key) {
     case 0x0000:  // Heading offset
-      Serial.printf("Adding heading offset: %d", (int8_t)heading_offset_rad);
+      sprintf(logMsg, "Adding heading offset: %d", (int8_t)heading_offset_rad);
+      monitorPrint(logMsg);
       N2kMsg.Add2ByteDouble(heading_offset_rad, 0.0001);
       N2kMsg.AddByte(0xff); // Reserved
       break;
@@ -696,19 +734,17 @@ void calc_heading () {
 void printValues() {
   // ----- send the results to the Serial Monitor
   if (DEVICE_ID != 24) {
-    Serial.printf("ID: %2d\n", DEVICE_ID);
+    sprintf(logMsg, "ID: %2d\n", DEVICE_ID);
+    monitorPrint(logMsg);
   }
   if (showOutput) {
     // Print data to Serial Monitor window
     if (!compassError) {
-      Serial.printf("Heading: % 5.1f", heading);
-      Serial.printf(", Pitch: % 5.1f", pitch);
-      Serial.printf(", Roll: % 5.1f", roll);
-      Serial.print(" deg ");
+      sprintf(logMsg,"Heading: % 5.1f, Pitch: % 5.1f, Roll: % 5.1f deg", heading, pitch, roll);
     } else {
-      Serial.print("[COMPASS ERROR] ");
+      sprintf(logMsg,"[COMPASS ERROR] ");
     }
-
+    monitorPrint(logMsg);
     /*
       Serial.print("\t$ACC,");
       Serial.print(accelX,4);
@@ -720,27 +756,29 @@ void printValues() {
     */
 
     if (!gyroError) {
-      Serial.print("  [Gyro]");
-      Serial.printf(" %6.1f", gyroZ);
-      Serial.print(" deg/s");
+      sprintf(logMsg,"  [Gyro] %6.1f deg/s", gyroZ);
     } else {
-      Serial.print(" [GYRO ERROR] ");
+      sprintf(logMsg," [GYRO ERROR] ");
     }
-
+    monitorPrint(logMsg);
 
     if (!compassError) {
-      Serial.printf("  HeadingM % 5.1f", heading_mag);
+      sprintf(logMsg, "  HeadingM % 5.1f", heading_mag);
+      monitorPrint(logMsg);
       if (send_heading_true) {
-        Serial.printf(" Variation % 3.1f", heading_variation);
-        Serial.printf(" HeadingT % 5.1f", heading_true);
+        sprintf(logMsg, " Variation % 3.1f HeadingT % 5.1f", heading_variation, heading_true);
+        monitorPrint(logMsg);
       }
     }
 
-    Serial.printf("  [Calibration] ");
+    sprintf(logMsg, "  [Calibration] ");
+    monitorPrint(logMsg);
     for (int z = 0; z <= 7; z++) {
-      Serial.printf("%d", calibrationStatus[z]);
+      sprintf(logMsg, "%d", calibrationStatus[z]);
+      monitorPrint(logMsg);
     }
-    Serial.printf (" n2kConnected: %d\n", n2kConnected);
+    sprintf (logMsg, " n2kConnected: %d\n", n2kConnected);
+    monitorPrint(logMsg);
   }
 }
 
@@ -751,35 +789,40 @@ void clearCalibration()
     EEPROM.writeByte(i, 0x0);
   }
   EEPROM.commit();
-  Serial.printf ("Calibration cleared\n");  
+  monitorPrintln ("Calibration cleared");  
 }
 
 void readCalibration() {
-  Serial.println("\n[Saved settings]");
-  Serial.print("heading_offset_deg : ");
+  monitorPrintln("\n[Saved settings]");
+  monitorPrint("heading_offset_deg : ");
   heading_offset_deg = (int8_t)EEPROM.readByte(EEP_HEADING_OFFSET);
   heading_offset_rad = radians(heading_offset_deg);
-  Serial.printf("%d %f\n", heading_offset_deg, heading_offset_rad);
+  sprintf(logMsg, "%d %f\n", heading_offset_deg, heading_offset_rad);
+  monitorPrint(logMsg);
 
-  Serial.print("heel_offset_deg    : ");
+  monitorPrint("heel_offset_deg    : ");
   heel_offset_deg = (int8_t)(EEPROM.readByte(EEP_HEEL_OFFSET));
   heel_offset_rad = radians(heel_offset_deg);
-  Serial.printf("%d %f\n", heel_offset_deg, heel_offset_rad);
+  sprintf(logMsg, "%d %f\n", heel_offset_deg, heel_offset_rad);
+  monitorPrint(logMsg);
 
-  Serial.print("trim_offset_deg    : ");
+  monitorPrint("trim_offset_deg    : ");
   trim_offset_deg = (int8_t)(EEPROM.readByte(EEP_TRIM_OFFSET));
   trim_offset_rad = radians(trim_offset_deg);
-  Serial.printf("%d %f\n", trim_offset_deg, trim_offset_rad);
-  Serial.print("autocalibration    : ");
+  sprintf(logMsg, "%d %f\n", trim_offset_deg, trim_offset_rad);
+  monitorPrint(logMsg);
+  monitorPrint("autocalibration    : ");
   compass_autocalibration = EEPROM.readByte(EEP_AUTOCALIBRATION);
-  Serial.println(compass_autocalibration);
+  sprintf(logMsg, "%a", compass_autocalibration);
+  monitorPrintln(logMsg);
   configureAutoCalibration(compass_autocalibration);
 }
 
 void printBytes()
 {
   for (size_t i = 0; i < EEPROM_SIZE; ++i)
-    Serial.println(EEPROM.readByte(i), HEX);
+    sprintf(logMsg, "%X", EEPROM.readByte(i));
+    monitorPrintln(logMsg);
 }
 
 float getPitch16()
@@ -1270,34 +1313,36 @@ void changeCalibrationState(byte state) {
   sendByte(byte(0x98));
   sendByte(byte(0x95));
   sendByte(byte(0x99));
-  Serial.printf("Writing %d\n", state);
+  sprintf(logMsg, "Writing %d\n", state);
+  monitorPrint(logMsg);
   sendByte(state);
 }
 
 void configureAutoCalibration(unsigned char m) {
-  Serial.printf("configureAutoCalibration mode: %s\n", String(m));
+  sprintf(logMsg, "configureAutoCalibration mode: %s\n", String(m));
+  monitorPrint(logMsg);
   EEPROM.writeByte(EEP_AUTOCALIBRATION, m);
   EEPROM.commit();
 
   if (m == 0x00) {
-    Serial.println("Turning autocalibration off");
+    monitorPrintln("Turning autocalibration off");
     delay(100);
     changeCalibrationState(byte(B10000000));
   }
   if (m == 0x01) {
-    Serial.println("Turning auto calibration on");
+    monitorPrintln("Turning auto calibration on");
     sendEraseCalibration();
     delay(500);
     changeCalibrationState(byte(B10010111));
    }
   if (m == 0x02) {
-    Serial.println("Changing auto calibration to locked");
+    monitorPrintln("Changing auto calibration to locked");
     storeCalibrationProfile();
     delay(500);
     changeCalibrationState(byte(B10000000));
   }
   if (m == 0x03) {
-    Serial.println("Turning autocalibration auto");
+    monitorPrintln("Turning autocalibration auto");
     changeCalibrationState(byte(B10010001));
   }
 }
@@ -1375,4 +1420,18 @@ void changeAddress(byte i2cAddress, byte newi2cAddress)
     return;
   }
 
+}
+
+void monitorPrintln(char *logmessage) {
+  Serial.println(logmessage);
+  if (BT_MON) {
+    SerialBT.println(logmessage);
+  }
+}
+
+void monitorPrint(char *logmessage) {
+  Serial.print(logmessage);
+  if (BT_MON) {
+    SerialBT.print(logmessage);
+  }
 }

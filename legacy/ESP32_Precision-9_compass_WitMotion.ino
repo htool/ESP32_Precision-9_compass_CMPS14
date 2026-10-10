@@ -13,40 +13,48 @@ enum EEP_ADDR
   EEP_AUTOCALIBRATION = 0x03
 };
 
-//Address of the CMPS14 compass on i2c
-#define _i2cAddress 0x60
-
-#define CONTROL_Register 0
-#define VERSION_Register 0
-
-#define HEADING_Register 2
-#define PITCH_Register 4
-#define PITCH_Register16 26
-#define ROLL_Register 5
-#define ROLL_Register16 28
-
-#define MAGNETX_Register  6
-#define MAGNETY_Register  8
-#define MAGNETZ_Register 10
-
-#define ACCELEROX_Register 12
-#define ACCELEROY_Register 14
-#define ACCELEROZ_Register 16
-
-#define GYROX_Register 18
-#define GYROY_Register 20
-#define GYROZ_Register 22
-
-#define CALIBRATION_Register 30
-
-int calibrationStatus[8];
-
-#define ONE_BYTE   1
-#define TWO_BYTES  2
-#define FOUR_BYTES 4
-#define SIX_BYTES  6
-
 float Pi = 3.1415926;
+
+/*
+
+https://forum.arduino.cc/t/wt901b-calibration/1221788
+
+On SerialPort (UART1)
+WT901B          ESP32
+    VCC <--->  VIN (5V)
+    RX  <--->  (GPIO2) TX1
+    TX  <--->  (GPIO4) RX1
+    GND <--->  GND
+
+On Serial2 (UART2)
+WT901B          ESP32
+    VCC <--->  VIN (5V)
+    RX  <--->  (GPI17) TX2
+    TX  <--->  (GPI16) RX2
+    GND <--->  GND
+
+// Unlock Configuration
+byte data1[] = {0xFF, 0xAA, 0x69, 0x88, 0xB5};
+SerialPort.write(data1, 5);
+
+delay(2);
+
+// Go into working mode
+byte data4[] = {0xFF, 0xAA, 0x01, 0x00, 0x00};
+SerialPort.write(data4, 5);
+
+delay(2000);
+
+// Enable calibration mode
+byte data2[] = {0xFF, 0xAA, 0x01, 0x01, 0x00};
+SerialPort.write(data2, 5);
+
+delay(6000); // Wait for calibration to finish
+
+// Save configuration
+byte data3[] = {0xFF, 0xAA, 0x00, 0x00, 0x00};
+SerialPort.write(data3, 5);
+*/
 
 //---------------------------------
 

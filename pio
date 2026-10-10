@@ -1,0 +1,18 @@
+#!/usr/bin/env bash
+# Apt `/usr/bin/pio` is PlatformIO 4.3.4 and crashes on Python 3.12.
+# Use this wrapper (./pio) or a sibling project venv.
+set -euo pipefail
+ROOT="$(cd "$(dirname "$0")" && pwd)"
+CANDIDATES=(
+  "$ROOT/.pio/venv/bin/pio"
+  "$HOME/src/Arduino/WasteTank_DS1603L/.pio/venv/bin/pio"
+  "$HOME/src/Arduino/ESP32_chain_counter/.pio/venv/bin/pio"
+)
+for p in "${CANDIDATES[@]}"; do
+  if [[ -x "$p" ]]; then
+    exec "$p" "$@"
+  fi
+done
+python3 -m venv "$ROOT/.pio/venv"
+"$ROOT/.pio/venv/bin/pip" install -U pip 'platformio>=6'
+exec "$ROOT/.pio/venv/bin/pio" "$@"

@@ -1692,11 +1692,10 @@ class CubeApp:
         """Vehicle-frame invert defaults for DIRECTION (+ −X=starboard).
 
         Horizontal/table: identity.
-        Vertical boat (−X starboard): invert yaw only — same as ESP32 web UI.
-        (Earlier invert-roll+yaw made Invert Yaw appear to heel the boat.)
+        Vertical boat (−X starboard): invert roll+pitch+yaw (verified on desk).
         """
         if vertical:
-            return False, False, True  # roll, pitch, yaw
+            return True, True, True  # roll, pitch, yaw
         return False, False, False
 
     def _apply_inverts_for_mount(self, vertical: bool, force: bool = False) -> None:
@@ -1839,7 +1838,7 @@ class CubeApp:
         self.root.title(f"WitMotion compass — {kind}")
 
     def _sync_mount_when_linked(self) -> None:
-        """After link: read DIRECTION, restore matching viewer profile, snapshot."""
+        """After link: read DIRECTION, restore matching viewer profile."""
         if self._mount_ui_synced:
             return
         with self.state.lock:
@@ -1850,29 +1849,17 @@ class CubeApp:
             return
         self._mount_ui_synced = True
         self.mount_vertical_intent = bool(vert)
-        self._apply_inverts_for_mount(bool(vert), force=True)
-        # Restore offsets only if they look like fine trim, not a −60…90° mask.
+        # Always restore the saved mount profile (inverts + offsets), including
+        # large yaw/trim zeros from a real level/north align — do not discard
+        # |offset|>45° (that wiped the working vertical cal on reconnect).
         latest = self._profile_path_latest(bool(vert))
         if latest.exists():
-            try:
-                profile = json.loads(latest.read_text(encoding="utf-8"))
-                viewer = profile.get("viewer") or {}
-                ox = float(viewer.get("offset_x_deg", 0.0))
-                oy = float(viewer.get("offset_y_deg", 0.0))
-                oz = float(viewer.get("offset_z_deg", 0.0))
-                if max(abs(ox), abs(oy), abs(oz)) <= 45.0:
-                    self.offset_x.set(ox)
-                    self.offset_y.set(oy)
-                    self.offset_z.set(oz)
-                else:
-                    self.offset_x.set(0.0)
-                    self.offset_y.set(0.0)
-                    self.offset_z.set(0.0)
-            except (OSError, json.JSONDecodeError, TypeError, ValueError):
-                pass
-        if not self._autosaved_link:
-            self._autosaved_link = True
-            self._save_mount_profile(vertical=bool(vert), quiet=True)
+            self._restore_viewer_for_mount(bool(vert))
+        else:
+            self._apply_inverts_for_mount(bool(vert), force=True)
+            if not self._autosaved_link:
+                self._autosaved_link = True
+                self._save_mount_profile(vertical=bool(vert), quiet=True)
 
     def _save_profile_clicked(self) -> None:
         self._save_mount_profile(vertical=self._current_vertical(), quiet=False)

@@ -22,7 +22,7 @@ Power the SH-ESP32 from the boat’s **8–32 V** power connector, USB (bench), 
 
 Do **not** use GPIO 16/17 for the IMU — those are the default I2C pins. Do not use 32/34 for UART — those are CAN.
 
-Default UART baud is **9600** (factory HWT901B-TTL). If you changed baud in WitMotion software, set `kImuBaud` in `src/main.cpp` to match.
+UART baud is **57600** (same as the USB cube viewer after cal). On boot the firmware asks a factory-default (9600) sensor to switch and save that rate. If you already set baud in WitMotion software, keep `kImuBaud` in `src/main.cpp` in sync.
 
 ### Aansluitschema
 
@@ -40,9 +40,37 @@ NMEA 2000 drop              SH-ESP32 CAN connector (DeviceNet/M12)
 
 Cross TX/RX: sensor **TX** → ESP32 **RX** (18), sensor **RX** ← ESP32 **TX** (19). Wire on the GPIO header; no solder-jumper changes needed for 18/19.
 
-Mount the sensor level, arrow/label forward if possible. If the cable plug faces the stern, leave **Invert yaw** enabled in the web UI (default).
+**Recommended mount (vertical):** cable/wire **down**, sticker/label face toward the
+**bow**, **−X toward starboard** (WitMotion: rotate 90° about X, then
+`DIRECTION=vertical`). Set that in the cube viewer (**Vertical mount**) or
+WitMotion MiniIMU — it is saved on the sensor flash.
 
-## Signal K paths
+| Face / end | Points |
+| --- | --- |
+| Cable (−Y) | Down (keel) |
+| Opposite cable (+Y) | Up |
+| Sticker (+Z) | Bow |
+| −X end | Starboard |
+
+In the web UI: **Vertical mount** on, **Invert roll / pitch / yaw** all on
+(matches the working USB cube profile for −X=starboard). Heel follows WitMotion
+pitch, trim follows WitMotion roll (Y-forward vehicle frame). Fine-tune with
+**Heading / heel / trim offset**. After Vertical mount, raw tilt should be ~0°
+when the sensor sits still in the bracket — if pitch/roll≈±90°, DIRECTION did
+not take.
+
+## Output mode (choose one)
+
+In the SensESP web UI → **Compass output** (restart after change):
+
+| Mode | Compass data |
+| --- | --- |
+| **1. NMEA 2000 only** | On the CAN bus; **no** Signal K deltas |
+| **2. Signal K only** (default) | Over Wi‑Fi to Signal K; **no** N2K compass TX |
+
+Wi‑Fi stays up in both modes (OTA / web UI). Only compass publishing is gated.
+
+### Signal K paths (mode 2)
 
 | Path | Unit | Source |
 | --- | --- | --- |
@@ -50,29 +78,70 @@ Mount the sensor level, arrow/label forward if possible. If the cable plug faces
 | `navigation.attitude` | rad (roll/pitch/yaw) | Angle frame |
 | `navigation.rateOfTurn` | rad/s | Gyro Z |
 
-## NMEA 2000 (optional)
+### NMEA 2000 (mode 1)
 
-After the first received N2K frame, the firmware transmits:
+After the first received N2K frame, standard + B&G Precision-9 style PGNs:
 
-| PGN | Content | Rate |
+| PGN | Content | Rate / role |
 | --- | --- | --- |
 | 127250 | Vessel Heading (magnetic) | ~10 Hz |
 | 127251 | Rate of Turn | ~10 Hz |
 | 127257 | Attitude (pitch/roll) | ~20 Hz |
+| **130824** | B&G pitch/roll performance keys | ~20 Hz |
+| **130845** | B&G offset get/set (heading, heel, trim) | on request from MFD |
+| **130850 / 130851** | B&G calibration start/stop + ack | starts/stops COG deviation swing |
+| **129026** (RX) | COG / SOG rapid update | used to build the 0.5° deviation map |
+| **127258** (RX) | Magnetic variation | converts true COG → magnetic when present |
 
-Device claims as “Precision-9 Compass” (same product info style as the old CMPS14 sketch).
+Offsets from the MFD are stored in SensESP config (same as web UI).
+
+### Deviation map (COG ↔ compass)
+
+Underway, turn steadily with SOG ≥ 1 kn and start a swing from the MFD compass
+cal (PGN 130850) or the web **Control** buttons (**Start / Stop COG deviation
+swing**). The firmware records COG vs magnetic heading into a **0.5°** table
+(720 bins), extracts the mean error into **Heading offset** (minimizes constant
+sensor offset), and keeps the residual curve in the map.
+
+- Status page group **Deviation**: enabled, bins filled, RMS, live COG−compass
+- Config card **Deviation map (COG)** + chart page [`/deviation`](http://wit-compass.local/deviation)
+- Download / upload JSON: [`/api/deviation.json`](http://wit-compass.local/api/deviation.json) (GET download, PUT upload)
+- N2K listen for COG stays active even in Signal K–only output mode
+
+**NMEA 2000 identity** (web UI, restart required): preferred CAN address, ISO NAME fields (unique number / serial, manufacturer code, device class & function, industry group, device/system instance), and product info (model serial, product code, model ID, software/model version, load equivalency, certification) plus installation description strings. Defaults match the old Precision-9 sketch (address 24, unique 1048678, …). Control tab: **Reset N2K identity to defaults** (reboots).
+
+### Power saving (N2K mode)
+
+When **navigation** is off (no Zeus / autopilot), lower the update rate and turn Wi‑Fi off. Wake is driven by a configurable N2K PGN:
+
+| State | TX rate | Wi‑Fi |
+| --- | --- | --- |
+| Active (wake PGN seen) | **10 Hz** (configurable) | On for **1 hour** after each idle→active |
+| Idle (no wake PGN for timeout) | **1 Hz** | Off |
+| Boot | — | On for Wi‑Fi duration (OTA/config) |
+
+Default wake PGN: **126992** (System Time — usually from Zeus/MFD when nav is powered). Set source address to pin to a specific device, or PGN `0` = any. Control tab: **Reset power saving to defaults**.
 
 ## Calibration (before boat install)
 
-1. Connect the HWT901B to a PC with the included USB‑TTL adapter.
-2. Use [WitMotion Windows software](https://wiki.wit-motion.com/) to:
-   - Calibrate accelerometer (level surface)
-   - Calibrate magnetometer (figure‑8 / slow rotation, away from iron)
-   - Optionally set return rate to 10 Hz and content to Acc + Gyro + Angle (+ Mag)
-3. Save configuration on the sensor (`save` in WitMotion UI).
-4. Disconnect USB and wire the sensor to the SH-ESP32 as above.
+Official WitMotion procedure ([HWT901B manuals](https://witmotion-sensor.com/pages/faq),
+[WIT Standard Protocol](https://wit-motion.gitbook.io/witmotion-sdk/wit-standard-protocol/wit-standard-communication-protocol)):
 
-Heading offset for the boat (installation misalignment) is set later in the SensESP web UI.
+1. Connect the HWT901B to a PC with the USB‑TTL adapter (TX↔RX crossed).
+2. Either run `python3 tools/witmotion_cube.py …` → **Calibrate…**, or use
+   WitMotion Windows MiniIMU under `vendor/witmotion-pc-software/`:
+   - **Accel** — level table, still (`CALSW=1`). Never do this on a rocking boat.
+   - **Mag** — spherical fit (`CALSW=0x07`): slow free 3D tumbling 1½–3 min,
+     ≥20 cm from iron (laptop speakers count). Dual-plane mode is `CALSW=0x09`.
+   - Keep **9-axis** (`AXIS6=0`). 6-axis integrates gyro and *will* drift.
+3. Save to flash. Confirm heading stays put when still, then tracks when you turn.
+4. Wire the sensor to the SH-ESP32.
+
+**Boat install (soft/hard iron):** Mag cal only removes *constant* bias. Mount away
+from steel, speakers, and DC cables; set heading offset in the SensESP UI; build a
+GPS deviation table if residual error exceeds ~±5°. Re-run mag cal at the mount if
+needed — not accel. Good marine write-up:
+[open-boat-projects.org — HWT901B for Signal K](https://open-boat-projects.org/en/magnetischer-kompass-fuer-signalk/).
 
 ## Build and first flash (USB)
 
@@ -93,6 +162,32 @@ If Signal K is HTTPS/TLS, flash `shesp32_espidf` instead of `shesp32`.
 
 Serial log should show `HWT901B linked` once angle frames arrive. Status page: `http://wit-compass.local/` (or the device IP).
 
+## Tools (USB calibration / 3D cube)
+
+With the HWT901B on a USB‑TTL adapter (TX↔RX crossed, common GND):
+
+```bash
+python3 tools/witmotion_cube.py --port /dev/ttyUSB0 --baud 57600
+```
+
+Use **Calibrate…** for guided accel + magnetometer calibration (same `CALSW` UART
+commands as the Windows software). Official Windows installer zips live under
+`vendor/witmotion-pc-software/` (see README there; not committed — large binaries).
+
+**Save profile** / **Load profile** store viewer offsets + `HX/HY/HZOFFSET` under
+`tools/calibrations/` as `horizontal_latest.json` or `vertical_latest.json`
+(whichever DIRECTION is active). The viewer banner and 3D chip show the mode;
+red “DIRECTION mismatch” means the sensor pose does not match the register.
+
+Headless horizontal snapshot:
+
+```bash
+python3 tools/witmotion_cube.py --port /dev/ttyUSB0 --baud 57600 --save-horizontal-profile
+```
+
+For boat-mount mag cal: click **Vertical mount** first (banner = VERTICAL), then
+**Calibrate…**. Accel still uses a flat/horizontal step; mag returns to vertical.
+
 ## OTA (remote flash)
 
 OTA password comes from `OTA_PASSWORD` in `wifi_secrets.h`. First image must be USB-flashed so the OTA partition table is present.
@@ -108,9 +203,10 @@ Or uncomment `upload_protocol = espota` / `upload_port` / `upload_flags --auth=.
 
 ## Config in the web UI
 
+- **Compass output** — N2K-only or Signal K-only (restart required)
 - **Heading offset (°)** — add after yaw conversion (−180…180)
 - **Invert yaw** — `heading = 360 − yaw` when the cable faces aft (on by default)
-- SK path names if you need non-default paths
+- SK path names if you need non-default paths (Signal K mode)
 
 ## Legacy sketch
 

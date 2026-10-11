@@ -12,3 +12,12 @@ sdkconfig.*
 
 # Local Wi-Fi / OTA secrets (copy from wifi_secrets.h.example)
 wifi_secrets.h
+
+# Large vendor downloads (WitMotion Windows PC software)
+vendor/witmotion-pc-software/*.zip
+vendor/witmotion-pc-software/.venv/
+
+# USB cube viewer local state
+tools/__pycache__/
+tools/calibrations/*.json
+!tools/calibrations/.gitkeep

@@ -18,6 +18,10 @@
 
 #include <SPIFFS.h>
 #include <WiFi.h>
+#include <esp_system.h>
+
+#include <utility>
+#include <vector>
 
 #include "deviation_map.h"
 #include "hwt901b.h"
@@ -51,6 +55,39 @@ static std::vector<ClientSSIDConfig> wifi_clients_from_secrets() {
 #endif
   return clients;
 }
+
+/** Put the strongest currently-visible configured SSID first so boot does not
+ *  sit on a missing primary (NO_AP_FOUND) until the 5 s round-robin runs. */
+static void prefer_visible_ssid(std::vector<ClientSSIDConfig>& clients) {
+  if (clients.size() < 2) {
+    return;
+  }
+  WiFi.mode(WIFI_STA);
+  WiFi.disconnect(true, false);
+  delay(100);
+  const int n = WiFi.scanNetworks(/*async=*/false, /*show_hidden=*/true);
+  int best_i = -1;
+  int best_rssi = -127;
+  for (size_t ci = 0; ci < clients.size(); ++ci) {
+    for (int i = 0; i < n; ++i) {
+      if (WiFi.SSID(i) == clients[ci].ssid_ && WiFi.RSSI(i) > best_rssi) {
+        best_rssi = WiFi.RSSI(i);
+        best_i = static_cast<int>(ci);
+      }
+    }
+  }
+  WiFi.scanDelete();
+  if (best_i < 0) {
+    ESP_LOGW("wifi", "No configured SSID in scan (%d APs) — round-robin later",
+             n);
+    return;
+  }
+  if (best_i > 0) {
+    std::swap(clients[0], clients[static_cast<size_t>(best_i)]);
+  }
+  ESP_LOGI("wifi", "Boot prefer SSID '%s' (RSSI %d dBm)",
+           clients[0].ssid_.c_str(), best_rssi);
+}
 #endif
 
 // Free GPIOs on SH-ESP32 (not used by CAN / I2C / 1-Wire jumpers).
@@ -63,8 +100,35 @@ static const uint32_t kImuBaud = 57600;
 static const gpio_num_t kCanTxPin = GPIO_NUM_32;
 static const gpio_num_t kCanRxPin = GPIO_NUM_34;
 
+static const char* boot_reset_reason_str() {
+  switch (esp_reset_reason()) {
+    case ESP_RST_POWERON:
+      return "power-on";
+    case ESP_RST_EXT:
+      return "external (EN/USB reset)";
+    case ESP_RST_SW:
+      return "software";
+    case ESP_RST_PANIC:
+      return "panic";
+    case ESP_RST_INT_WDT:
+    case ESP_RST_TASK_WDT:
+    case ESP_RST_WDT:
+      return "watchdog";
+    case ESP_RST_DEEPSLEEP:
+      return "deep-sleep";
+    case ESP_RST_BROWNOUT:
+      return "BROWNOUT (supply sag — N2K bus alone often cannot feed Wi‑Fi)";
+    case ESP_RST_SDIO:
+      return "sdio";
+    default:
+      return "other";
+  }
+}
+
 void setup() {
   SetupLogging(ESP_LOG_INFO);
+  ESP_LOGI("boot", "Reset reason: %s (%d)", boot_reset_reason_str(),
+           static_cast<int>(esp_reset_reason()));
 
   SensESPAppBuilder builder;
   auto* app_builder =
@@ -77,6 +141,7 @@ void setup() {
 #if defined(WIFI_SSID) || defined(WIFI_SSID_2)
   drop_saved_wifi_config();
   wifi_clients = wifi_clients_from_secrets();
+  prefer_visible_ssid(wifi_clients);
   app_builder->set_wifi_clients(wifi_clients);
   app_builder->set_wifi_access_point("", "");
   for (const auto& c : wifi_clients) {
@@ -86,11 +151,57 @@ void setup() {
 
   sensesp_app = app_builder->get_app();
 
-  WiFi.setSleep(false);
+  // 240→160 MHz saves ~30–40 mA; SensESP + UART + Wi‑Fi are fine at 160.
+  setCpuFrequencyMhz(160);
+
 #if defined(WIFI_SSID) || defined(WIFI_SSID_2)
   WiFi.softAPdisconnect(true);
   WiFi.mode(WIFI_STA);
-  ESP_LOGI("wifi", "STA-only, modem sleep off (no SensESP config AP)");
+  // Modest TX + modem sleep: cuts average draw a lot vs always-awake radio.
+  // Peaks still need a stiff 12 V supply (≥~1.5–2 A headroom), not a 0.8 A wall wart.
+  WiFi.setTxPower(WIFI_POWER_11dBm);
+  WiFi.setSleep(WIFI_PS_MIN_MODEM);
+  ESP_LOGI("wifi", "STA-only, modem sleep on, TX 11 dBm, CPU %d MHz",
+           getCpuFrequencyMhz());
+#endif
+
+#if defined(WIFI_SSID) && defined(WIFI_SSID_2)
+  // SensESP's built-in multi-SSID failover only advances every 20 s, so a
+  // missing primary (NO_AP_FOUND) leaves the backup unused for too long.
+  // Round-robin every 5 s: primary → backup → primary → …
+  event_loop()->onRepeat(5000, []() {
+    static int idx = 0;  // SensESP already started on [0]; first tick → [1]
+    static bool was_up = false;
+    const bool up = WiFi.status() == WL_CONNECTED;
+    if (up) {
+      if (!was_up) {
+        WiFi.setSleep(WIFI_PS_MIN_MODEM);
+      }
+      was_up = true;
+      return;
+    }
+    if (was_up) {
+      // Dropped: prefer primary on the next attempt.
+      idx = -1;
+      was_up = false;
+    }
+    // Stay awake while hunting for an AP.
+    WiFi.setSleep(false);
+    struct Net {
+      const char* ssid;
+      const char* pass;
+    };
+    const Net nets[] = {
+        {WIFI_SSID, WIFI_PASSWORD},
+        {WIFI_SSID_2, WIFI_PASSWORD_2},
+    };
+    idx = (idx + 1) % 2;
+    ESP_LOGI("wifi", "Round-robin try SSID '%s'", nets[idx].ssid);
+    WiFi.disconnect(false);
+    delay(50);
+    WiFi.begin(nets[idx].ssid, nets[idx].pass);
+  });
+  ESP_LOGI("wifi", "SSID round-robin every 5 s (primary ↔ backup)");
 #endif
 
   auto output = std::make_shared<OutputModeConfig>("/output");
@@ -154,9 +265,19 @@ void setup() {
   ConfigItem(imu)
       ->set_title("HWT901B compass")
       ->set_description(
-          "Vertical mount, Invert roll/pitch/yaw (cube-viewer defaults), "
-          "heel/trim/heading offsets. UART 57600. Mag cal on the sensor first.")
+          "Roll / pitch / yaw offset + invert (editable after install). "
+          "Upload a cube profile at "
+          "<a href=\"/mount_profile\" target=\"_blank\">/mount_profile</a> "
+          "to overwrite all six. UART 57600.")
       ->set_sort_order(100);
+
+  register_mount_profile_http(imu);
+
+  UIButton::add("mount_factory", "Reset mount profile to factory", true)
+      ->attach([imu]() {
+        imu->reset_to_factory_mount();
+        ESP_LOGI("hwt901b", "Mount profile reset to factory (reboot if DIRECTION wrong)");
+      });
 
   UIButton::add("dev_cal_start", "Start COG deviation swing", false)
       ->attach([deviation]() { deviation->start_calibration(); });

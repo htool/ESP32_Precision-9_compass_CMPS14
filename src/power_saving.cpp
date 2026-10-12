@@ -26,7 +26,7 @@ void PowerSavingConfig::reset_to_defaults() {
   wake_pgn_ = 126992;
   wake_source_ = 255;
   idle_timeout_s_ = 120;
-  wifi_on_duration_s_ = 3600;
+  wifi_on_duration_s_ = 900;
   active_hz_ = 10;
   idle_hz_ = 1;
   save();
@@ -229,7 +229,8 @@ void PowerManager::set_wifi(bool on) {
 
   if (on) {
     WiFi.mode(WIFI_STA);
-    WiFi.setSleep(false);
+    WiFi.setTxPower(WIFI_POWER_11dBm);
+    WiFi.setSleep(false);  // full radio while associating
     if (!wifi_clients_.empty()) {
       const auto& c = wifi_clients_.front();
       WiFi.begin(c.ssid_.c_str(), c.password_.c_str());
@@ -237,6 +238,13 @@ void PowerManager::set_wifi(bool on) {
     } else {
       ESP_LOGI("power", "Wi‑Fi ON");
     }
+    // Modem sleep once linked — biggest steady-state saving while Wi‑Fi stays up.
+    event_loop()->onDelay(8000, []() {
+      if (WiFi.status() == WL_CONNECTED) {
+        WiFi.setSleep(WIFI_PS_MIN_MODEM);
+        ESP_LOGI("power", "Wi‑Fi modem sleep enabled");
+      }
+    });
   } else {
     ESP_LOGI("power", "Wi‑Fi OFF (power save)");
     WiFi.disconnect(true, false);

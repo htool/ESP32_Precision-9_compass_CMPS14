@@ -3,6 +3,9 @@
 
 #include <HardwareSerial.h>
 
+#include <memory>
+
+#include "sensesp/net/http_server.h"
 #include "sensesp/system/saveable.h"
 #include "sensesp/system/valueproducer.h"
 #include "sensesp/types/position.h"
@@ -20,6 +23,10 @@ class DeviationMap;
  * USB cube viewer: heel = WM pitch, trim = WM roll, yaw = WM yaw; offsets
  * then Invert roll/pitch/yaw. Optional DeviationMap corrects heading from
  * a COG swing table.
+ *
+ * Factory starting profile = vertical mount, invert R/P/Y, zero offsets
+ * (same as the desk-verified cube viewer defaults). Upload a cube
+ * `vertical_*.json` via /api/mount_profile.json.
  */
 class Hwt901b : public FileSystemSaveable {
  public:
@@ -43,15 +50,42 @@ class Hwt901b : public FileSystemSaveable {
   float rate_of_turn_dps() const { return gyro_z_dps_; }
   bool linked() const { return linked_; }
 
-  float heading_offset_deg() const { return heading_offset_deg_; }
-  float heel_offset_deg() const { return heel_offset_deg_; }
-  float trim_offset_deg() const { return trim_offset_deg_; }
+  /** Nautical roll (heel) offset — same as cube viewer offset_x. */
+  float roll_offset_deg() const { return roll_offset_deg_; }
+  /** Nautical pitch (trim) offset — same as cube viewer offset_y. */
+  float pitch_offset_deg() const { return pitch_offset_deg_; }
+  /** Yaw / heading offset — same as cube viewer offset_z. */
+  float yaw_offset_deg() const { return yaw_offset_deg_; }
+  // B&G / legacy aliases
+  float heel_offset_deg() const { return roll_offset_deg_; }
+  float trim_offset_deg() const { return pitch_offset_deg_; }
+  float heading_offset_deg() const { return yaw_offset_deg_; }
+  bool invert_roll() const { return invert_roll_; }
+  bool invert_pitch() const { return invert_pitch_; }
+  bool invert_yaw() const { return invert_yaw_; }
+  bool vertical_mount() const { return vertical_mount_; }
+  bool swap_uart_pins() const { return swap_uart_pins_; }
 
-  void set_heading_offset_deg(float deg);
-  void set_heel_offset_deg(float deg);
-  void set_trim_offset_deg(float deg);
-  /** Add degrees to heading offset (used after deviation mean extract). */
+  void set_roll_offset_deg(float deg);
+  void set_pitch_offset_deg(float deg);
+  void set_yaw_offset_deg(float deg);
+  void set_heel_offset_deg(float deg) { set_roll_offset_deg(deg); }
+  void set_trim_offset_deg(float deg) { set_pitch_offset_deg(deg); }
+  void set_heading_offset_deg(float deg) { set_yaw_offset_deg(deg); }
+  /** Add degrees to yaw offset (used after deviation mean extract). */
   void add_heading_offset_deg(float delta_deg);
+
+  /** Desk-verified vertical boat defaults (invert R/P/Y, zero offsets). */
+  void reset_to_factory_mount();
+
+  /** Write AXIS6=9-axis and DIRECTION to sensor flash (needs vertical_mount_). */
+  void apply_sensor_install();
+
+  /** Cube-viewer JSON (`viewer` / `install`) or flat SensESP keys. */
+  bool to_cube_profile(JsonObject& root) const;
+  bool from_cube_profile(const JsonObject& root, bool* attitude_cleared = nullptr);
+
+  void register_http_handlers(HTTPServer& server);
 
   bool to_json(JsonObject& root) override;
   bool from_json(const JsonObject& config) override;
@@ -74,24 +108,32 @@ class Hwt901b : public FileSystemSaveable {
   void publish();
   float raw_to_deg(int16_t raw) const;
   float normalize_heading(float deg) const;
+  int8_t effective_rx_pin() const;
+  int8_t effective_tx_pin() const;
+  /** Re-open UART with current swap setting. probe_baud=true on boot. */
+  void apply_uart_pins(bool probe_baud);
+  void write_reg(uint8_t reg, uint8_t low, uint8_t high = 0x00);
+  void update_link_status();
 
   HardwareSerial& serial_;
-  int8_t rx_pin_;
-  int8_t tx_pin_;
+  int8_t rx_pin_;  // compile-time ESP32 RX (sensor TX), before swap
+  int8_t tx_pin_;  // compile-time ESP32 TX (sensor RX), before swap
   uint32_t baud_;
   DeviationMap* deviation_map_ = nullptr;
 
   uint8_t buf_[11];
   uint8_t buf_len_ = 0;
 
-  float heading_offset_deg_ = 0.0f;
-  float heel_offset_deg_ = 0.0f;
-  float trim_offset_deg_ = 0.0f;
+  float roll_offset_deg_ = 0.0f;   // heel
+  float pitch_offset_deg_ = 0.0f;  // trim
+  float yaw_offset_deg_ = 0.0f;    // heading
   // Vertical boat mount (−X starboard): invert all three (matches cube viewer).
-  bool invert_yaw_ = true;
   bool invert_roll_ = true;
   bool invert_pitch_ = true;
+  bool invert_yaw_ = true;
   bool vertical_mount_ = true;
+  /** Swap GPIO roles: ESP RX←→TX (try if wiring may be crossed wrong). */
+  bool swap_uart_pins_ = false;
 
   float roll_raw_deg_ = 0.0f;   // WM roll (= trim axis)
   float pitch_raw_deg_ = 0.0f;  // WM pitch (= heel axis)
@@ -105,11 +147,21 @@ class Hwt901b : public FileSystemSaveable {
   bool have_gyro_ = false;
   bool linked_ = false;
   unsigned long last_frame_ms_ = 0;
+  unsigned long last_rx_ms_ = 0;
+  uint32_t rx_bytes_window_ = 0;
+  uint32_t frame_ok_window_ = 0;
+  uint32_t tx_bytes_total_ = 0;
 
   FloatProducer heading_producer_;
   AttitudeProducer attitude_producer_;
   FloatProducer rot_producer_;
 
+  StatusPageItem<bool> rx_activity_item_;
+  StatusPageItem<int> rx_bps_item_;
+  StatusPageItem<int> tx_bytes_item_;
+  StatusPageItem<int> frames_ps_item_;
+  StatusPageItem<int> uart_rx_pin_item_;
+  StatusPageItem<int> uart_tx_pin_item_;
   StatusPageItem<bool> linked_item_;
   StatusPageItem<float> heading_item_;
   StatusPageItem<float> pitch_item_;
@@ -118,6 +170,8 @@ class Hwt901b : public FileSystemSaveable {
 };
 
 const String ConfigSchema(const Hwt901b& obj);
+
+void register_mount_profile_http(std::shared_ptr<Hwt901b> imu);
 
 }  // namespace sensesp
 

@@ -42,7 +42,8 @@ class PowerSavingConfig : public FileSystemSaveable {
   unsigned long wake_pgn_ = 126992;   // System Time; 0 = any PGN
   uint8_t wake_source_ = 255;         // 255 = any source address
   unsigned long idle_timeout_s_ = 120;
-  unsigned long wifi_on_duration_s_ = 3600;
+  // 15 min is enough for OTA/config; was 1 h (keeps radio up unnecessarily).
+  unsigned long wifi_on_duration_s_ = 900;
   int active_hz_ = 10;
   int idle_hz_ = 1;
 };

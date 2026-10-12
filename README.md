@@ -8,7 +8,13 @@ Board docs: [hardware / pinout](https://docs.hatlabs.fi/sh-esp32/hardware/). Sen
 
 ## Hardware (SH-ESP32)
 
-Power the SH-ESP32 from the boat’s **8–32 V** power connector, USB (bench), or NMEA 2000 (with voltage-link pads if you use bus power). The IMU is wired on the **GPIO header**; use the board’s **3.3 V** pads for sensor VCC (there is no 5 V rail on the header — HWT901B-TTL accepts 3.3–5 V).
+Power the SH-ESP32 from the boat’s **8–32 V** power connector (preferred), USB (bench), or NMEA 2000 with the **voltage-link** pads joined.
+
+**Supply:** use a stiff **12 V ≥ ~2 A** feed on the 8–32 V connector (0.8 A wall warts brown out when Wi‑Fi associates). N2K NET‑S alone is LEN-limited and usually too weak. USB + 12 V together is fine; plugging USB into a PC also **resets** the ESP.
+
+**Draw reduction (firmware):** Wi‑Fi TX **11 dBm**, **modem sleep** when associated, CPU **160 MHz**, and in N2K mode power-saving turns Wi‑Fi **off** after the boot/active window (default **15 min**, configurable). Peaks still need headroom; average current drops a lot once linked or when Wi‑Fi is off.
+
+The IMU is wired on the **GPIO header**; use the board’s **3.3 V** pads for sensor VCC (there is no 5 V rail on the header — HWT901B-TTL accepts 3.3–5 V). Wide‑voltage / RS232 housings need Protected Voltage (~12 V) plus a MAX3232 if levels are RS232.
 
 | Function | SH-ESP32 | Notes |
 | --- | --- | --- |
@@ -38,7 +44,7 @@ Boat 12/24 V                SH-ESP32 power connector (8–32 V)
 NMEA 2000 drop              SH-ESP32 CAN connector (DeviceNet/M12)
 ```
 
-Cross TX/RX: sensor **TX** → ESP32 **RX** (18), sensor **RX** ← ESP32 **TX** (19). Wire on the GPIO header; no solder-jumper changes needed for 18/19.
+Cross TX/RX: sensor **TX** → ESP32 **RX** (18), sensor **RX** ← ESP32 **TX** (19). Wire on the GPIO header; no solder-jumper changes needed for 18/19. If linked stays false, try **Swap UART RX/TX pins** in the HWT901B config (applies immediately). Status shows **UART RX activity**, **RX B/s**, **valid frames/s**, and **TX bytes** (power alone cannot be sensed — RX traffic is the proxy for “sensor on”).
 
 **Recommended mount (vertical):** cable/wire **down**, sticker/label face toward the
 **bow**, **−X toward starboard** (WitMotion: rotate 90° about X, then
@@ -52,12 +58,18 @@ WitMotion MiniIMU — it is saved on the sensor flash.
 | Sticker (+Z) | Bow |
 | −X end | Starboard |
 
-In the web UI: **Vertical mount** on, **Invert roll / pitch / yaw** all on
-(matches the working USB cube profile for −X=starboard). Heel follows WitMotion
-pitch, trim follows WitMotion roll (Y-forward vehicle frame). Fine-tune with
-**Heading / heel / trim offset**. After Vertical mount, raw tilt should be ~0°
-when the sensor sits still in the bracket — if pitch/roll≈±90°, DIRECTION did
-not take.
+Factory starting profile (fresh SPIFFS / **Reset mount profile to factory**):
+**Vertical mount** on, **Invert roll / pitch / yaw** all on, attitude offsets 0
+(matches the desk-verified USB cube defaults for −X=starboard). Heel follows
+WitMotion pitch, trim follows WitMotion roll. Fine-tune with **Heading / heel /
+trim offset** after the housing is in the bracket — do **not** zero while the
+sensor is lying flat; |heel|/|trim| ≫ 45° tips the bow ~90°.
+
+Upload a cube viewer profile (`tools/calibrations/vertical_*.json`) at
+[`/mount_profile`](http://wit-compass.local/mount_profile) (GET/PUT
+[`/api/mount_profile.json`](http://wit-compass.local/api/mount_profile.json)).
+Large heel/trim offsets in the JSON are cleared automatically. Restart after
+changing Vertical mount so DIRECTION is rewritten on the sensor.
 
 ## Output mode (choose one)
 
@@ -154,7 +166,7 @@ cp wifi_secrets.h.example wifi_secrets.h   # edit SSID/password (gitignored)
 ./pio device monitor
 ```
 
-`wifi_secrets.h` lives at the project root and is compiled in (`-include`), not under `src/`. Optional `WIFI_SSID_2` / `WIFI_PASSWORD_2` are tried as failover via SensESP `set_wifi_clients()`. With secrets the device joins in **STA-only** mode. Without the file, a config AP named `wit-compass` (password `thisisfine`) starts so you can set Wi‑Fi in the SensESP web UI.
+`wifi_secrets.h` lives at the project root and is compiled in (`-include`), not under `src/`. Optional `WIFI_SSID_2` / `WIFI_PASSWORD_2` are a backup SSID: while disconnected the firmware round‑robins **primary → backup → primary** every **5 s** (SensESP’s own failover is 20 s; we advance faster). With secrets the device joins in **STA-only** mode. Without the file, a config AP named `wit-compass` (password `thisisfine`) starts so you can set Wi‑Fi in the SensESP web UI.
 
 Default Signal K server is `192.168.3.1:3000` (boatnet). Change it in the web UI if needed.
 

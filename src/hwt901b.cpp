@@ -271,7 +271,8 @@ void Hwt901b::handle_angle(const uint8_t* payload) {
 
   // Match USB cube viewer (Y-forward / DIRECTION=vertical):
   //   WM pitch → heel (roll), WM roll → trim (pitch), WM yaw → heading.
-  // Offsets applied before invert.
+  // Mount offsets (+ invert) are internal; B&G bang_* fine-adjust is applied
+  // after that so the MFD can show 0 and still nudge the published angles.
   float heel = pitch_raw_deg_ + roll_offset_deg_;
   float trim = roll_raw_deg_ + pitch_offset_deg_;
   float yaw_b = yaw_deg_ + yaw_offset_deg_;
@@ -284,14 +285,14 @@ void Hwt901b::handle_angle(const uint8_t* payload) {
   if (invert_yaw_) {
     yaw_b = -yaw_b;
   }
-  roll_deg_ = heel;
-  pitch_deg_ = trim;
+  roll_deg_ = heel + bang_heel_offset_deg_;
+  pitch_deg_ = trim + bang_trim_offset_deg_;
   heading_raw_deg_ = normalize_heading(yaw_b);
+  float heading = heading_raw_deg_;
   if (deviation_map_ != nullptr) {
-    heading_deg_ = deviation_map_->correct(heading_raw_deg_);
-  } else {
-    heading_deg_ = heading_raw_deg_;
+    heading = deviation_map_->correct(heading_raw_deg_);
   }
+  heading_deg_ = normalize_heading(heading + bang_heading_offset_deg_);
   have_angle_ = true;
   publish();
 }
@@ -308,6 +309,21 @@ void Hwt901b::set_pitch_offset_deg(float deg) {
 
 void Hwt901b::set_yaw_offset_deg(float deg) {
   yaw_offset_deg_ = deg;
+  save();
+}
+
+void Hwt901b::set_bang_heading_offset_deg(float deg) {
+  bang_heading_offset_deg_ = deg;
+  save();
+}
+
+void Hwt901b::set_bang_heel_offset_deg(float deg) {
+  bang_heel_offset_deg_ = deg;
+  save();
+}
+
+void Hwt901b::set_bang_trim_offset_deg(float deg) {
+  bang_trim_offset_deg_ = deg;
   save();
 }
 
@@ -359,6 +375,9 @@ void Hwt901b::reset_to_factory_mount() {
   roll_offset_deg_ = 0.0f;
   pitch_offset_deg_ = 0.0f;
   yaw_offset_deg_ = 0.0f;
+  bang_heading_offset_deg_ = 0.0f;
+  bang_heel_offset_deg_ = 0.0f;
+  bang_trim_offset_deg_ = 0.0f;
   save();
   apply_sensor_install();
   ESP_LOGI("hwt901b",
@@ -662,6 +681,9 @@ bool Hwt901b::to_json(JsonObject& root) {
   root["invert_pitch"] = invert_pitch_;
   root["yaw_offset_deg"] = yaw_offset_deg_;
   root["invert_yaw"] = invert_yaw_;
+  root["bang_heading_offset_deg"] = bang_heading_offset_deg_;
+  root["bang_heel_offset_deg"] = bang_heel_offset_deg_;
+  root["bang_trim_offset_deg"] = bang_trim_offset_deg_;
   root["vertical_mount"] = vertical_mount_;
   root["swap_uart_pins"] = swap_uart_pins_;
   root["baud"] = baud_;
@@ -684,8 +706,17 @@ bool Hwt901b::from_json(const JsonObject& config) {
   }
   if (config["yaw_offset_deg"].is<float>()) {
     yaw_offset_deg_ = config["yaw_offset_deg"].as<float>();
-  } else if (config["heading_offset_deg"].is<float>()) {
-    yaw_offset_deg_ = config["heading_offset_deg"].as<float>();
+  }
+  // Pre-split firmware stored B&G offsets in yaw/roll/pitch; leave those as
+  // mount. New bang_* keys are the only ones B&G 130845 reads/writes.
+  if (config["bang_heading_offset_deg"].is<float>()) {
+    bang_heading_offset_deg_ = config["bang_heading_offset_deg"].as<float>();
+  }
+  if (config["bang_heel_offset_deg"].is<float>()) {
+    bang_heel_offset_deg_ = config["bang_heel_offset_deg"].as<float>();
+  }
+  if (config["bang_trim_offset_deg"].is<float>()) {
+    bang_trim_offset_deg_ = config["bang_trim_offset_deg"].as<float>();
   }
   if (config["invert_roll"].is<bool>()) {
     invert_roll_ = config["invert_roll"].as<bool>();
@@ -724,7 +755,7 @@ const String ConfigSchema(const Hwt901b& /*obj*/) {
       "roll_offset_deg": {
         "title": "Roll offset (°)",
         "type": "number",
-        "description": "Heel offset (cube offset_x). Applied before Invert roll. Editable after install; overwritten by profile upload."
+        "description": "Internal mount heel offset (cube offset_x). Invisible to B&G. Applied before Invert roll. Overwritten by profile upload."
       },
       "invert_roll": {
         "title": "Invert roll",
@@ -734,7 +765,7 @@ const String ConfigSchema(const Hwt901b& /*obj*/) {
       "pitch_offset_deg": {
         "title": "Pitch offset (°)",
         "type": "number",
-        "description": "Trim offset (cube offset_y). Applied before Invert pitch. Overwritten by profile upload."
+        "description": "Internal mount trim offset (cube offset_y). Invisible to B&G. Applied before Invert pitch. Overwritten by profile upload."
       },
       "invert_pitch": {
         "title": "Invert pitch",
@@ -744,12 +775,27 @@ const String ConfigSchema(const Hwt901b& /*obj*/) {
       "yaw_offset_deg": {
         "title": "Yaw offset (°)",
         "type": "number",
-        "description": "Heading offset (cube offset_z). Also settable from B&G / COG swing. Overwritten by profile upload."
+        "description": "Internal mount heading offset (cube offset_z). Invisible to B&G — MFD shows bang heading offset instead. Also updated by COG swing mean fold. Overwritten by profile upload."
       },
       "invert_yaw": {
         "title": "Invert yaw",
         "type": "boolean",
         "description": "Negate yaw/heading after offset. Overwritten by profile upload."
+      },
+      "bang_heading_offset_deg": {
+        "title": "B&G heading fine-adjust (°)",
+        "type": "number",
+        "description": "What the MFD shows/sets via PGN 130845. Applied after mount offset + invert + deviation. Defaults to 0."
+      },
+      "bang_heel_offset_deg": {
+        "title": "B&G heel fine-adjust (°)",
+        "type": "number",
+        "description": "B&G heel offset (130845). Applied after mount roll offset + invert."
+      },
+      "bang_trim_offset_deg": {
+        "title": "B&G trim fine-adjust (°)",
+        "type": "number",
+        "description": "B&G trim offset (130845). Applied after mount pitch offset + invert."
       },
       "vertical_mount": {
         "title": "Vertical mount (cable down, sticker to bow)",

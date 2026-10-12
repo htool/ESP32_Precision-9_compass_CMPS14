@@ -46,7 +46,7 @@ const String ConfigSchema(const OutputModeConfig& /*obj*/) {
     "properties": {
       "mode": {
         "title": "Compass output",
-        "description": "NMEA 2000 bus only: CAN PGNs 127250 (heading), 127251 (rate of turn), 127257 (attitude), plus B&G Precision-9 style 130824 / 130845 / 130850. No Signal K compass deltas. Wi-Fi stays available for OTA / this UI (subject to power saving). — Signal K over Wi-Fi only: publish navigation.headingMagnetic, navigation.attitude and navigation.rateOfTurn to Signal K; no compass PGNs on the N2K bus. Restart after saving.",
+        "description": "NMEA 2000 bus only: CAN PGNs 127250 (heading), 127251 (rate of turn), 127257 (attitude), plus B&G Precision-9 style 130824 / 130845 / 130850. No Signal K compass deltas. Wi-Fi stays OFF until magic PGN 61184 WIFI on (tools/n2k_wifi_control.py / ota_update.sh). — Signal K over Wi-Fi only: Wi-Fi starts at boot; publish navigation.headingMagnetic, navigation.attitude and navigation.rateOfTurn to Signal K; no compass PGNs on the N2K bus. Restart after saving.",
         "type": "array",
         "format": "radiobutton",
         "uniqueItems": true,

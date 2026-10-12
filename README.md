@@ -12,7 +12,7 @@ Power the SH-ESP32 from the boat’s **8–32 V** power connector (preferred), U
 
 **Supply:** use a stiff **12 V ≥ ~2 A** feed on the 8–32 V connector (0.8 A wall warts brown out when Wi‑Fi associates). N2K NET‑S alone is LEN-limited and usually too weak. USB + 12 V together is fine; plugging USB into a PC also **resets** the ESP.
 
-**Draw reduction (firmware):** Wi‑Fi TX **11 dBm**, **modem sleep** when associated, CPU **160 MHz**, and in N2K mode power-saving turns Wi‑Fi **off** after the boot/active window (default **15 min**, configurable). Peaks still need headroom; average current drops a lot once linked or when Wi‑Fi is off.
+**Wi‑Fi / RF (current defaults):** STA **19.5 dBm**, **PS_NONE**, CPU **240 MHz**. Earlier draw cuts (11 dBm TX, modem sleep, 160 MHz) caused weak-link `AUTH_EXPIRE` and one-ping drops. N2K TX idle/active rate saving is separate and unchanged. Peaks still need a stiff 12 V supply.
 
 The IMU is wired on the **GPIO header**; use the board’s **3.3 V** pads for sensor VCC (there is no 5 V rail on the header — HWT901B-TTL accepts 3.3–5 V). Wide‑voltage / RS232 housings need Protected Voltage (~12 V) plus a MAX3232 if levels are RS232.
 
@@ -59,11 +59,12 @@ WitMotion MiniIMU — it is saved on the sensor flash.
 | −X end | Starboard |
 
 Factory starting profile (fresh SPIFFS / **Reset mount profile to factory**):
-**Vertical mount** on, **Invert roll / pitch / yaw** all on, attitude offsets 0
-(matches the desk-verified USB cube defaults for −X=starboard). Heel follows
-WitMotion pitch, trim follows WitMotion roll. Fine-tune with **Heading / heel /
-trim offset** after the housing is in the bracket — do **not** zero while the
-sensor is lying flat; |heel|/|trim| ≫ 45° tips the bow ~90°.
+**Vertical mount** on, **Invert roll / pitch / yaw** all on, **mount** attitude
+offsets 0 (matches the desk-verified USB cube defaults for −X=starboard). Heel
+follows WitMotion pitch, trim follows WitMotion roll. Fine-tune **mount** yaw /
+roll / pitch offsets after the housing is in the bracket — do **not** zero while
+the sensor is lying flat; |heel|/|trim| ≫ 45° tips the bow ~90°. Leave **B&G
+fine-adjust** at 0 so the MFD still shows zeros.
 
 Upload a cube viewer profile (`tools/calibrations/vertical_*.json`) at
 [`/mount_profile`](http://wit-compass.local/mount_profile) (GET/PUT
@@ -80,13 +81,15 @@ In the SensESP web UI → **Compass output** (restart after change):
 | **1. NMEA 2000 only** | On the CAN bus; **no** Signal K deltas |
 | **2. Signal K only** (default) | Over Wi‑Fi to Signal K; **no** N2K compass TX |
 
-Wi‑Fi stays up in both modes (OTA / web UI). Only compass publishing is gated.
+Wi‑Fi starts at boot in both modes (OTA / web UI) and is held open. Magic PGN /
+`ota_update.sh` can soft-disconnect or reconnect STA. Only compass **publishing**
+is gated by the mode switch.
 
 ### Signal K paths (mode 2)
 
 | Path | Unit | Source |
 | --- | --- | --- |
-| `navigation.headingMagnetic` | rad | Angle frame yaw + offset |
+| `navigation.headingMagnetic` | rad | Angle frame yaw + offsets |
 | `navigation.attitude` | rad (roll/pitch/yaw) | Angle frame |
 | `navigation.rateOfTurn` | rad/s | Gyro Z |
 
@@ -96,24 +99,38 @@ After the first received N2K frame, standard + B&G Precision-9 style PGNs:
 
 | PGN | Content | Rate / role |
 | --- | --- | --- |
-| 127250 | Vessel Heading (magnetic) | ~10 Hz |
-| 127251 | Rate of Turn | ~10 Hz |
-| 127257 | Attitude (pitch/roll) | ~20 Hz |
-| **130824** | B&G pitch/roll performance keys | ~20 Hz |
-| **130845** | B&G offset get/set (heading, heel, trim) | on request from MFD |
+| 127250 | Vessel Heading (magnetic) | **active_hz** (config; often 3 or 10 Hz) |
+| 127251 | Rate of Turn | same period as heading |
+| 127257 | Attitude (pitch/roll) | same period as heading |
+| **130824** | B&G pitch/roll performance keys | same period |
+| **130845** | B&G fine-adjust get/set (heading, heel, trim) | on request from MFD |
 | **130850 / 130851** | B&G calibration start/stop + ack | starts/stops COG deviation swing |
 | **129026** (RX) | COG / SOG rapid update | used to build the 0.5° deviation map |
 | **127258** (RX) | Magnetic variation | converts true COG → magnetic when present |
 
-Offsets from the MFD are stored in SensESP config (same as web UI).
+Each TX cycle sends **127250 + 127251 + 127257 + 130824** with the **same SID**,
+then increments SID by **1** (wraps 1…253). Older firmware alternated heading /
+attitude and made SID jump by 2 while cutting 127250 rate in half.
+
+### Attitude / heading offsets (two layers)
+
+| Layer | Keys | Used by | Applied |
+| --- | --- | --- | --- |
+| **Mount** (install) | `yaw/roll/pitch_offset_deg`, invert_*, cube profile, COG mean fold | Web UI / `/mount_profile` | Before invert (+ deviation for heading) |
+| **B&G fine-adjust** | `bang_heading/heel/trim_offset_deg` | PGN **130845** only | After mount (+ deviation for heading) |
+
+Mount offsets are **invisible to B&G** — the MFD reads/writes only `bang_*`
+(defaults **0**), so after install the boat can nudge a few degrees without
+seeing the large install correction.
 
 ### Deviation map (COG ↔ compass)
 
 Underway, turn steadily with SOG ≥ 1 kn and start a swing from the MFD compass
 cal (PGN 130850) or the web **Control** buttons (**Start / Stop COG deviation
 swing**). The firmware records COG vs magnetic heading into a **0.5°** table
-(720 bins), extracts the mean error into **Heading offset** (minimizes constant
-sensor offset), and keeps the residual curve in the map.
+(720 bins), extracts the mean error into the **mount yaw offset** (minimizes
+constant sensor offset; still invisible to B&G), and keeps the residual curve in
+the map.
 
 - Status page group **Deviation**: enabled, bins filled, RMS, live COG−compass
 - Config card **Deviation map (COG)** + chart page [`/deviation`](http://wit-compass.local/deviation)
@@ -122,17 +139,36 @@ sensor offset), and keeps the residual curve in the map.
 
 **NMEA 2000 identity** (web UI, restart required): preferred CAN address, ISO NAME fields (unique number / serial, manufacturer code, device class & function, industry group, device/system instance), and product info (model serial, product code, model ID, software/model version, load equivalency, certification) plus installation description strings. Defaults match the old Precision-9 sketch (address 24, unique 1048678, …). Control tab: **Reset N2K identity to defaults** (reboots).
 
-### Power saving (N2K mode)
+### Power saving & Wi‑Fi control
 
-When **navigation** is off (no Zeus / autopilot), lower the update rate and turn Wi‑Fi off. Wake is driven by a configurable N2K PGN:
+**TX rate** follows navigation (configurable wake PGN). **Wi‑Fi** is owned by
+`OfflineNetworkProvisioner` + `PowerManager` (not SensESP’s reconnect loop, which
+used to call `WiFi.begin()` mid-handshake → `ESP_ERR_WIFI_CONN` / `AUTH_EXPIRE`).
 
-| State | TX rate | Wi‑Fi |
+| State | Compass N2K TX | Wi‑Fi |
 | --- | --- | --- |
-| Active (wake PGN seen) | **10 Hz** (configurable) | On for **1 hour** after each idle→active |
-| Idle (no wake PGN for timeout) | **1 Hz** | Off |
-| Boot | — | On for Wi‑Fi duration (OTA/config) |
+| Active (wake PGN seen) | **active_hz** (config, default 10; boat often 3) | unchanged |
+| Idle (no wake PGN for timeout) | **idle_hz** (default 1) | unchanged |
+| Boot | — | **On** (hold-open; no timed auto-off) |
+| Magic PGN WIFI **on** | — | Associate / stay open |
+| Magic PGN WIFI **off** | — | **Soft-off:** STA disconnect only |
 
-Default wake PGN: **126992** (System Time — usually from Zeus/MFD when nav is powered). Set source address to pin to a specific device, or PGN `0` = any. Control tab: **Reset power saving to defaults**.
+**Do not use `WiFi.mode(WIFI_OFF)`.** That tears down lwIP; SensESP then dies and
+**N2K TX stops** with it. Soft-off keeps the driver + lwIP so heading keeps
+publishing. `ota_update.sh` defaults to **leaving Wi‑Fi on** after flash for the
+same reason.
+
+Default wake PGN (TX rate only): **126992** (System Time). Set source address to
+pin to a specific device, or PGN `0` = any. Control tab: **Reset power saving to
+defaults**.
+
+**Magic Wi‑Fi PGN:** proprietary single-frame **61184**, manufacturer **275**,
+data tag `WIFI`, command byte `1`=on / `0`=off (optional minutes in byte 7):
+
+```bash
+python3 tools/n2k_wifi_control.py on --iface can0 --minutes 15
+python3 tools/n2k_wifi_control.py off --iface can0
+```
 
 ## Calibration (before boat install)
 
@@ -150,9 +186,10 @@ Official WitMotion procedure ([HWT901B manuals](https://witmotion-sensor.com/pag
 4. Wire the sensor to the SH-ESP32.
 
 **Boat install (soft/hard iron):** Mag cal only removes *constant* bias. Mount away
-from steel, speakers, and DC cables; set heading offset in the SensESP UI; build a
-GPS deviation table if residual error exceeds ~±5°. Re-run mag cal at the mount if
-needed — not accel. Good marine write-up:
+from steel, speakers, and DC cables; set **mount yaw offset** in the SensESP UI
+(or align against a known good heading on the bus); build a GPS deviation table
+if residual error exceeds ~±5°. Re-run mag cal at the mount if needed — not
+accel. Good marine write-up:
 [open-boat-projects.org — HWT901B for Signal K](https://open-boat-projects.org/en/magnetischer-kompass-fuer-signalk/).
 
 ## Build and first flash (USB)
@@ -166,13 +203,19 @@ cp wifi_secrets.h.example wifi_secrets.h   # edit SSID/password (gitignored)
 ./pio device monitor
 ```
 
-`wifi_secrets.h` lives at the project root and is compiled in (`-include`), not under `src/`. Optional `WIFI_SSID_2` / `WIFI_PASSWORD_2` are a backup SSID: while disconnected the firmware round‑robins **primary → backup → primary** every **5 s** (SensESP’s own failover is 20 s; we advance faster). With secrets the device joins in **STA-only** mode. Without the file, a config AP named `wit-compass` (password `thisisfine`) starts so you can set Wi‑Fi in the SensESP web UI.
+`wifi_secrets.h` lives at the project root and is compiled in (`-include`), not
+under `src/`. Optional `WIFI_SSID_2` / `WIFI_PASSWORD_2` are a standby SSID: boot
+scans and prefers the strongest usable AP (RSSI ≥ about **−80 dBm**; weaker APs
+often `AUTH_EXPIRE` on this antenna). With secrets the device joins in
+**STA-only** mode. Without the file, a config AP named `wit-compass` (password
+`thisisfine`) starts so you can set Wi‑Fi in the SensESP web UI.
 
 Default Signal K server is `192.168.3.1:3000` (boatnet). Change it in the web UI if needed.
 
 If Signal K is HTTPS/TLS, flash `shesp32_espidf` instead of `shesp32`.
 
-Serial log should show `HWT901B linked` once angle frames arrive. Status page: `http://wit-compass.local/` (or the device IP).
+Serial log should show `HWT901B linked` once angle frames arrive. Status page:
+`http://wit-compass.local/` (or the device IP, e.g. `192.168.2.24` on the boat LAN).
 
 ## Tools (USB calibration / 3D cube)
 
@@ -202,23 +245,55 @@ For boat-mount mag cal: click **Vertical mount** first (banner = VERTICAL), then
 
 ## OTA (remote flash)
 
-OTA password comes from `OTA_PASSWORD` in `wifi_secrets.h`. First image must be USB-flashed so the OTA partition table is present.
+OTA password comes from `OTA_PASSWORD` in `wifi_secrets.h`. First image must be
+USB-flashed so the OTA partition table is present.
+
+Wi‑Fi is on at boot (hold-open). Preferred wrapper (builds + espota; **leaves
+Wi‑Fi on** by default so a post-flash magic OFF cannot kill N2K):
 
 ```bash
-# after the device is on Wi-Fi (check serial or http://wit-compass.local/)
-python3 ~/.platformio/packages/framework-arduinoespressif32/tools/espota.py \
-  -i DEVICE_IP -p 3232 --auth="$OTA_PASSWORD" \
-  -f .pio/build/shesp32/firmware.bin
+./ota_update.sh                         # wit-compass.local, can0
+./ota_update.sh 192.168.2.24            # explicit IP
+HOST=192.168.2.24 ./ota_update.sh --skip-build   # flash existing bin only
 ```
 
-Or uncomment `upload_protocol = espota` / `upload_port` / `upload_flags --auth=...` in `platformio.ini` and `./pio run -e shesp32 -t upload`.
+From a host that has a good LAN path to the device (e.g. **boatnet** on
+`192.168.2.0/24`), bind espota’s callback interface with `-I`:
+
+```bash
+# on boatnet, after scp of firmware.bin into the project tree:
+cd ~/src/Arduino/ESP32_Precision-9_compass_WitMotion
+AUTH=$(sed -n 's/.*OTA_PASSWORD[[:space:]]*"\([^"]*\)".*/\1/p' wifi_secrets.h)
+python3 ~/.platformio/packages/framework-arduinoespressif32/tools/espota.py \
+  -i 192.168.2.24 -I 192.168.2.1 -p 3232 -t 90 \
+  --auth="$AUTH" -f .pio/build/shesp32/firmware.bin -r
+```
+
+Or uncomment in `platformio.ini`:
+
+```ini
+upload_protocol = espota
+upload_port = 192.168.2.24
+upload_flags =
+    --auth=YOUR_OTA_PASSWORD
+```
+
+then `./pio run -e shesp32 -t upload` (Wi‑Fi must already be on). Under the hood
+this is the same `espota.py`.
+
+To force Wi‑Fi off after OTA (soft-off only — safe for N2K):  
+`LEAVE_WIFI_ON=0 ./ota_update.sh …` or `python3 tools/n2k_wifi_control.py off`.
 
 ## Config in the web UI
 
-- **Compass output** — N2K-only or Signal K-only (restart required)
-- **Heading offset (°)** — add after yaw conversion (−180…180)
-- **Invert yaw** — `heading = 360 − yaw` when the cable faces aft (on by default)
+- **Compass output** — NMEA 2000 only or Signal K only (restart required)
+- **Yaw / roll / pitch offset (°)** — internal **mount** offsets (invisible to B&G)
+- **Invert roll / pitch / yaw** — applied after mount offsets
+- **B&G heading / heel / trim fine-adjust (°)** — PGN 130845 layer (MFD sees these)
+- **Power saving** — wake PGN, idle/active Hz, Wi‑Fi on-duration (hold-open ignores timed off)
 - SK path names if you need non-default paths (Signal K mode)
+
+API: `GET`/`PUT` `http://DEVICE/api/config/hwt901b` (and `/power`, `/output`, …).
 
 ## Legacy sketch
 

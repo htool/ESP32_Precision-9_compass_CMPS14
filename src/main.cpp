@@ -4,8 +4,9 @@
 //   0 = NMEA 2000 only — std + B&G PGNs, no Signal K compass deltas
 //   1 = Signal K only  — Wi-Fi deltas; N2K still listens for COG / B&G cal
 //
-// Power saving (N2K TX): wake on configurable PGN → 10 Hz + Wi‑Fi 1 h;
-// idle → 1 Hz + Wi‑Fi off.
+// Power saving (N2K TX): wake on configurable PGN → 10 Hz; idle → 1 Hz.
+// Wi‑Fi starts at boot (configurable duration). Optional magic PGN 61184
+// WIFI on/off can extend or stop the radio early.
 
 #include "sensesp.h"
 
@@ -20,6 +21,7 @@
 #include <WiFi.h>
 #include <esp_system.h>
 
+#include <algorithm>
 #include <utility>
 #include <vector>
 
@@ -56,37 +58,73 @@ static std::vector<ClientSSIDConfig> wifi_clients_from_secrets() {
   return clients;
 }
 
-/** Put the strongest currently-visible configured SSID first so boot does not
- *  sit on a missing primary (NO_AP_FOUND) until the 5 s round-robin runs. */
+/** Reorder configured SSIDs by descending RSSI. Prefer APs ≥ −80 dBm —
+ *  weaker (e.g. −92) routinely AUTH_EXPIRE on this board's antenna. */
+static constexpr int kMinPreferRssiDbm = -80;
+
 static void prefer_visible_ssid(std::vector<ClientSSIDConfig>& clients) {
-  if (clients.size() < 2) {
+  if (clients.empty()) {
     return;
   }
   WiFi.mode(WIFI_STA);
-  WiFi.disconnect(true, false);
-  delay(100);
+  WiFi.disconnect(/*wifioff=*/true, /*eraseap=*/false);
+  delay(200);
   const int n = WiFi.scanNetworks(/*async=*/false, /*show_hidden=*/true);
-  int best_i = -1;
-  int best_rssi = -127;
+  struct Scored {
+    size_t idx;
+    int rssi;
+  };
+  std::vector<Scored> scored;
   for (size_t ci = 0; ci < clients.size(); ++ci) {
+    int best = -127;
     for (int i = 0; i < n; ++i) {
-      if (WiFi.SSID(i) == clients[ci].ssid_ && WiFi.RSSI(i) > best_rssi) {
-        best_rssi = WiFi.RSSI(i);
-        best_i = static_cast<int>(ci);
+      if (WiFi.SSID(i) == clients[ci].ssid_ && WiFi.RSSI(i) > best) {
+        best = WiFi.RSSI(i);
       }
+    }
+    if (best > -127) {
+      scored.push_back({ci, best});
+      ESP_LOGI("wifi", "Scan SSID '%s' RSSI %d dBm%s", clients[ci].ssid_.c_str(),
+               best, best < kMinPreferRssiDbm ? " (weak)" : "");
+    } else {
+      ESP_LOGW("wifi", "Scan SSID '%s' not visible", clients[ci].ssid_.c_str());
     }
   }
   WiFi.scanDelete();
-  if (best_i < 0) {
-    ESP_LOGW("wifi", "No configured SSID in scan (%d APs) — round-robin later",
-             n);
+  if (scored.empty()) {
+    ESP_LOGW("wifi", "No configured SSID in scan (%d APs)", n);
     return;
   }
-  if (best_i > 0) {
-    std::swap(clients[0], clients[static_cast<size_t>(best_i)]);
+  std::sort(scored.begin(), scored.end(),
+            [](const Scored& a, const Scored& b) { return a.rssi > b.rssi; });
+  // Stable reorder: strongest first; demote below-floor APs after usable ones.
+  std::vector<ClientSSIDConfig> ordered;
+  ordered.reserve(clients.size());
+  for (const auto& s : scored) {
+    if (s.rssi >= kMinPreferRssiDbm) {
+      ordered.push_back(clients[s.idx]);
+    }
   }
+  for (const auto& s : scored) {
+    if (s.rssi < kMinPreferRssiDbm) {
+      ordered.push_back(clients[s.idx]);
+    }
+  }
+  for (size_t ci = 0; ci < clients.size(); ++ci) {
+    bool seen = false;
+    for (const auto& s : scored) {
+      if (s.idx == ci) {
+        seen = true;
+        break;
+      }
+    }
+    if (!seen) {
+      ordered.push_back(clients[ci]);
+    }
+  }
+  clients.swap(ordered);
   ESP_LOGI("wifi", "Boot prefer SSID '%s' (RSSI %d dBm)",
-           clients[0].ssid_.c_str(), best_rssi);
+           clients[0].ssid_.c_str(), scored[0].rssi);
 }
 #endif
 
@@ -142,66 +180,30 @@ void setup() {
   drop_saved_wifi_config();
   wifi_clients = wifi_clients_from_secrets();
   prefer_visible_ssid(wifi_clients);
-  app_builder->set_wifi_clients(wifi_clients);
-  app_builder->set_wifi_access_point("", "");
+  // Do not use SensESP WiFiProvisioner — its 20 s WiFi.begin() re-enters while
+  // STA is still handshaking (ESP_ERR_WIFI_CONN → AUTH_EXPIRE thrash). Own STA
+  // via OfflineNetworkProvisioner + PowerManager instead.
+  app_builder->disable_wifi();
+  SensESPApp::get()->set_network_provisioner_factory(
+      []() -> std::shared_ptr<NetworkProvisioner> {
+        return std::make_shared<OfflineNetworkProvisioner>();
+      });
   for (const auto& c : wifi_clients) {
-    ESP_LOGI("wifi", "Using compile-time SSID '%s'", c.ssid_.c_str());
+    ESP_LOGI("wifi", "Configured SSID '%s'", c.ssid_.c_str());
   }
 #endif
 
   sensesp_app = app_builder->get_app();
 
-  // 240→160 MHz saves ~30–40 mA; SensESP + UART + Wi‑Fi are fine at 160.
-  setCpuFrequencyMhz(160);
+  // Full 240 MHz while chasing a solid Wi‑Fi link (160 MHz was a draw cut).
+  setCpuFrequencyMhz(240);
 
 #if defined(WIFI_SSID) || defined(WIFI_SSID_2)
   WiFi.softAPdisconnect(true);
-  WiFi.mode(WIFI_STA);
-  // Modest TX + modem sleep: cuts average draw a lot vs always-awake radio.
-  // Peaks still need a stiff 12 V supply (≥~1.5–2 A headroom), not a 0.8 A wall wart.
-  WiFi.setTxPower(WIFI_POWER_11dBm);
-  WiFi.setSleep(WIFI_PS_MIN_MODEM);
-  ESP_LOGI("wifi", "STA-only, modem sleep on, TX 11 dBm, CPU %d MHz",
+  WiFi.setSleep(WIFI_PS_NONE);
+  WiFi.setTxPower(WIFI_POWER_19_5dBm);  // max on ESP32 classic
+  ESP_LOGI("wifi", "Owned STA path, PS_NONE, TX 19.5 dBm, CPU %d MHz",
            getCpuFrequencyMhz());
-#endif
-
-#if defined(WIFI_SSID) && defined(WIFI_SSID_2)
-  // SensESP's built-in multi-SSID failover only advances every 20 s, so a
-  // missing primary (NO_AP_FOUND) leaves the backup unused for too long.
-  // Round-robin every 5 s: primary → backup → primary → …
-  event_loop()->onRepeat(5000, []() {
-    static int idx = 0;  // SensESP already started on [0]; first tick → [1]
-    static bool was_up = false;
-    const bool up = WiFi.status() == WL_CONNECTED;
-    if (up) {
-      if (!was_up) {
-        WiFi.setSleep(WIFI_PS_MIN_MODEM);
-      }
-      was_up = true;
-      return;
-    }
-    if (was_up) {
-      // Dropped: prefer primary on the next attempt.
-      idx = -1;
-      was_up = false;
-    }
-    // Stay awake while hunting for an AP.
-    WiFi.setSleep(false);
-    struct Net {
-      const char* ssid;
-      const char* pass;
-    };
-    const Net nets[] = {
-        {WIFI_SSID, WIFI_PASSWORD},
-        {WIFI_SSID_2, WIFI_PASSWORD_2},
-    };
-    idx = (idx + 1) % 2;
-    ESP_LOGI("wifi", "Round-robin try SSID '%s'", nets[idx].ssid);
-    WiFi.disconnect(false);
-    delay(50);
-    WiFi.begin(nets[idx].ssid, nets[idx].pass);
-  });
-  ESP_LOGI("wifi", "SSID round-robin every 5 s (primary ↔ backup)");
 #endif
 
   auto output = std::make_shared<OutputModeConfig>("/output");
@@ -236,9 +238,9 @@ void setup() {
       ->set_title("Power saving")
       ->set_description(
           "N2K TX mode only. Wake on a PGN (default 126992 System Time from "
-          "Zeus/MFD when navigation is on): 10 Hz TX + Wi‑Fi for 1 hour. "
-          "Idle: 1 Hz TX, Wi‑Fi off. Boot keeps Wi‑Fi on for the Wi‑Fi "
-          "duration so you can still OTA.")
+          "Zeus/MFD when navigation is on): 10 Hz TX. Idle: 1 Hz TX. "
+          "Boot keeps Wi‑Fi on for the configured duration (OTA/config). "
+          "Optional magic PGN 61184 WIFI on/off can extend or stop it early.")
       ->set_sort_order(70);
 
   UIButton::add("reset_power_saving", "Reset power saving to defaults", true)
@@ -328,9 +330,18 @@ void setup() {
   }
 
   // Always open N2K for COG / B&G cal; TX only in N2K output mode.
-  auto power = output->n2k_enabled()
-                   ? std::make_shared<PowerManager>(power_cfg.get(), wifi_clients)
-                   : nullptr;
+  // PowerManager owns STA. Wi‑Fi stay-on (no timed auto-off) — was a power
+  // cut that left the radio fighting reconnects; magic PGN can still OFF.
+  std::shared_ptr<PowerManager> power;
+#if defined(WIFI_SSID) || defined(WIFI_SSID_2)
+  power = std::make_shared<PowerManager>(power_cfg.get(), wifi_clients,
+                                         /*ota_password=*/nullptr,
+                                         /*hold_wifi_open=*/true);
+#else
+  if (output->n2k_enabled()) {
+    power = std::make_shared<PowerManager>(power_cfg.get(), wifi_clients);
+  }
+#endif
   auto n2k = std::make_shared<N2kCompassOutput>(
       kCanTxPin, kCanRxPin, imu.get(), n2k_id.get(), deviation.get(),
       power.get(), output->n2k_enabled());

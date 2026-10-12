@@ -90,13 +90,18 @@ void N2kCompassOutput::on_calibration_stop() {
   if (std::fabs(mean) > 0.001f) {
     // mean was already removed from the table in finalize; fold into offset.
     imu_->add_heading_offset_deg(mean);
-    ESP_LOGI("n2k", "Deviation mean %.3f° folded into heading offset (now %.3f°)",
-             mean, imu_->heading_offset_deg());
+    ESP_LOGI("n2k", "Deviation mean %.3f° folded into mount yaw offset (now %.3f°)",
+             mean, imu_->yaw_offset_deg());
   }
 }
 
 void N2kCompassOutput::on_msg(const tN2kMsg& msg) {
   if (power_ != nullptr) {
+    if (msg.PGN == sensesp::kWifiMagicPgn && msg.DataLen >= 7 &&
+        (msg.Destination == 255 || msg.Destination == device_address())) {
+      power_->on_wifi_magic(msg.PGN, msg.Source, msg.Data,
+                            static_cast<uint8_t>(msg.DataLen));
+    }
     power_->on_n2k_pgn(msg.PGN, msg.Source);
   }
 
@@ -335,15 +340,15 @@ void N2kCompassOutput::send_130824() {
 void N2kCompassOutput::send_now() {
   tN2kMsg msg;
 
-  if (send_heading_) {
-    SetN2kPGN127250(msg, sid_, imu_->heading_deg() * DEG_TO_RAD, N2kDoubleNA,
-                    N2kDoubleNA, N2khr_magnetic);
-    nmea2000_.SendMsg(msg, kDevCompass);
+  // One sample → one SID. Always emit heading (+ ROT) every period so 127250
+  // rate matches tx_period (the old heading/attitude toggle skipped every other
+  // 127250 and made SID jump by 2).
+  SetN2kPGN127250(msg, sid_, imu_->heading_deg() * DEG_TO_RAD, N2kDoubleNA,
+                  N2kDoubleNA, N2khr_magnetic);
+  nmea2000_.SendMsg(msg, kDevCompass);
 
-    SetN2kRateOfTurn(msg, sid_, imu_->rate_of_turn_dps() * DEG_TO_RAD * -1.0);
-    nmea2000_.SendMsg(msg, kDevCompass);
-  }
-  send_heading_ = !send_heading_;
+  SetN2kRateOfTurn(msg, sid_, imu_->rate_of_turn_dps() * DEG_TO_RAD * -1.0);
+  nmea2000_.SendMsg(msg, kDevCompass);
 
   SetN2kAttitude(msg, sid_, N2kDoubleNA, imu_->pitch_deg() * DEG_TO_RAD,
                  imu_->roll_deg() * DEG_TO_RAD);

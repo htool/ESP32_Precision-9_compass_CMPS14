@@ -50,16 +50,23 @@ class Hwt901b : public FileSystemSaveable {
   float rate_of_turn_dps() const { return gyro_z_dps_; }
   bool linked() const { return linked_; }
 
-  /** Nautical roll (heel) offset — same as cube viewer offset_x. */
+  /** Mount roll (heel) offset — cube viewer offset_x; not visible to B&G. */
   float roll_offset_deg() const { return roll_offset_deg_; }
-  /** Nautical pitch (trim) offset — same as cube viewer offset_y. */
+  /** Mount pitch (trim) offset — cube viewer offset_y; not visible to B&G. */
   float pitch_offset_deg() const { return pitch_offset_deg_; }
-  /** Yaw / heading offset — same as cube viewer offset_z. */
+  /** Mount yaw / heading offset — cube viewer offset_z; not visible to B&G. */
   float yaw_offset_deg() const { return yaw_offset_deg_; }
-  // B&G / legacy aliases
-  float heel_offset_deg() const { return roll_offset_deg_; }
-  float trim_offset_deg() const { return pitch_offset_deg_; }
-  float heading_offset_deg() const { return yaw_offset_deg_; }
+  /**
+   * B&G MFD fine-adjust offsets (PGN 130845). Separate from mount offsets so
+   * the boat sees 0 after install and can nudge heading/heel/trim slightly.
+   */
+  float bang_heading_offset_deg() const { return bang_heading_offset_deg_; }
+  float bang_heel_offset_deg() const { return bang_heel_offset_deg_; }
+  float bang_trim_offset_deg() const { return bang_trim_offset_deg_; }
+  // B&G aliases → bang_* layer (not mount)
+  float heading_offset_deg() const { return bang_heading_offset_deg_; }
+  float heel_offset_deg() const { return bang_heel_offset_deg_; }
+  float trim_offset_deg() const { return bang_trim_offset_deg_; }
   bool invert_roll() const { return invert_roll_; }
   bool invert_pitch() const { return invert_pitch_; }
   bool invert_yaw() const { return invert_yaw_; }
@@ -69,10 +76,13 @@ class Hwt901b : public FileSystemSaveable {
   void set_roll_offset_deg(float deg);
   void set_pitch_offset_deg(float deg);
   void set_yaw_offset_deg(float deg);
-  void set_heel_offset_deg(float deg) { set_roll_offset_deg(deg); }
-  void set_trim_offset_deg(float deg) { set_pitch_offset_deg(deg); }
-  void set_heading_offset_deg(float deg) { set_yaw_offset_deg(deg); }
-  /** Add degrees to yaw offset (used after deviation mean extract). */
+  void set_bang_heading_offset_deg(float deg);
+  void set_bang_heel_offset_deg(float deg);
+  void set_bang_trim_offset_deg(float deg);
+  void set_heading_offset_deg(float deg) { set_bang_heading_offset_deg(deg); }
+  void set_heel_offset_deg(float deg) { set_bang_heel_offset_deg(deg); }
+  void set_trim_offset_deg(float deg) { set_bang_trim_offset_deg(deg); }
+  /** Add degrees to mount yaw offset (used after deviation mean extract). */
   void add_heading_offset_deg(float delta_deg);
 
   /** Desk-verified vertical boat defaults (invert R/P/Y, zero offsets). */
@@ -124,9 +134,12 @@ class Hwt901b : public FileSystemSaveable {
   uint8_t buf_[11];
   uint8_t buf_len_ = 0;
 
-  float roll_offset_deg_ = 0.0f;   // heel
-  float pitch_offset_deg_ = 0.0f;  // trim
-  float yaw_offset_deg_ = 0.0f;    // heading
+  float roll_offset_deg_ = 0.0f;   // mount heel (invisible to B&G)
+  float pitch_offset_deg_ = 0.0f;  // mount trim (invisible to B&G)
+  float yaw_offset_deg_ = 0.0f;    // mount heading (invisible to B&G)
+  float bang_heading_offset_deg_ = 0.0f;  // B&G 130845 fine adjust
+  float bang_heel_offset_deg_ = 0.0f;
+  float bang_trim_offset_deg_ = 0.0f;
   // Vertical boat mount (−X starboard): invert all three (matches cube viewer).
   bool invert_roll_ = true;
   bool invert_pitch_ = true;

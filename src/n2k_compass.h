@@ -49,7 +49,6 @@ class N2kCompassOutput {
   static bool bus_seen_;
   unsigned long last_tx_ms_ = 0;
   unsigned char sid_ = 1;
-  bool send_heading_ = true;
   unsigned char autocalibration_ = 0x00;
   float variation_deg_ = 0.0f;
   bool have_variation_ = false;
